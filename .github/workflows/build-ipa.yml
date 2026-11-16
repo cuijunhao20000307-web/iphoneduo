@@ -22,7 +22,9 @@ jobs:
           git -C upstream checkout --detach 5b65200015f7ed0a0fdf34708bd857e4a34e1f80
           cp -R overlay/ForceDuoApp/. upstream/ForceDuoApp/
           icon=''
-          if [ -f 'E0A85E69-992D-4F28-A5AF-8354D5B92AA9(1).png' ]; then
+          if [ -f 'E0A85E69-992D-4F28-A5AF-8354D5B92AA9.png' ]; then
+            icon='E0A85E69-992D-4F28-A5AF-8354D5B92AA9.png'
+          elif [ -f 'E0A85E69-992D-4F28-A5AF-8354D5B92AA9(1).png' ]; then
             icon='E0A85E69-992D-4F28-A5AF-8354D5B92AA9(1).png'
           elif [ -f assets/ForceDuoIcon.png ]; then
             icon='assets/ForceDuoIcon.png'
