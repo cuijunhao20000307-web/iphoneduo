@@ -1,0 +1,55 @@
+name: Build Force Duo Chinese IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare upstream and Chinese overlay
+        run: |
+          set -euo pipefail
+          git clone https://github.com/34306/ForceDuoApp.git upstream
+          git -C upstream checkout --detach 5b65200015f7ed0a0fdf34708bd857e4a34e1f80
+          cp -R overlay/ForceDuoApp/. upstream/ForceDuoApp/
+          plutil -lint upstream/ForceDuoApp/ForceDuo.xcodeproj/project.pbxproj
+          plutil -lint upstream/ForceDuoApp/Sources/zh-Hans.lproj/Localizable.strings
+          plutil -lint upstream/ForceDuoApp/Sources/en.lproj/Localizable.strings
+          grep -q 'FDSandbox.m in Sources' upstream/ForceDuoApp/ForceDuo.xcodeproj/project.pbxproj
+
+      - name: Compile iOS app without signing
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          xcodebuild -version
+          xcodebuild -project upstream/ForceDuoApp/ForceDuo.xcodeproj \
+            -scheme ForceDuo -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ForceDuoDerived" \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/ForceDuoDerived/Build/Products/Release-iphoneos/ForceDuo.app"
+          test -f "$app/ForceDuo"
+          mkdir -p "$RUNNER_TEMP/IpaPayload/Payload"
+          cp -R "$app" "$RUNNER_TEMP/IpaPayload/Payload/ForceDuo.app"
+          (cd "$RUNNER_TEMP/IpaPayload" && zip -qry "$GITHUB_WORKSPACE/ForceDuo-zh-Hans-unsigned.ipa" Payload)
+          unzip -t ForceDuo-zh-Hans-unsigned.ipa | tail -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ForceDuo-zh-Hans-unsigned-IPA
+          path: ForceDuo-zh-Hans-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
