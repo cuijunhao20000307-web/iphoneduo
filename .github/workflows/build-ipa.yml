@@ -21,6 +21,11 @@ jobs:
           git clone https://github.com/34306/ForceDuoApp.git upstream
           git -C upstream checkout --detach 5b65200015f7ed0a0fdf34708bd857e4a34e1f80
           cp -R overlay/ForceDuoApp/. upstream/ForceDuoApp/
+          if [ -f assets/ForceDuoIcon.png ]; then
+            sips -s format png -z 1024 1024 assets/ForceDuoIcon.png \
+              --out upstream/ForceDuoApp/Sources/Assets.xcassets/AppIcon.appiconset/ForceDuoIcon.png >/dev/null
+            echo 'Using supplied logo as the app icon.'
+          fi
           plutil -lint upstream/ForceDuoApp/ForceDuo.xcodeproj/project.pbxproj
           plutil -lint upstream/ForceDuoApp/Sources/zh-Hans.lproj/Localizable.strings
           plutil -lint upstream/ForceDuoApp/Sources/en.lproj/Localizable.strings
