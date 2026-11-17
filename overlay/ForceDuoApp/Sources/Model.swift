@@ -4,6 +4,8 @@ import Observation
 struct SDKVersion: Comparable, Hashable, Codable, CustomStringConvertible {
     var major: Int, minor: Int, patch: Int
     static let target = SDKVersion(major: 27, minor: 1, patch: 0)
+    static let trial27 = SDKVersion(major: 27, minor: 0, patch: 0)
+    static let trialLatest = SDKVersion(major: 27, minor: 2, patch: 1)
 
     static func < (a: SDKVersion, b: SDKVersion) -> Bool {
         (a.major, a.minor, a.patch) < (b.major, b.minor, b.patch)
@@ -86,6 +88,10 @@ final class AppCatalog {
     private(set) var forced: Set<String>
     /// Original SDK of each app before we touched it.
     private(set) var originals: [String: SDKVersion]
+    /// The version last written by this app; old installs default to 27.1.
+    private(set) var appliedTargets: [String: SDKVersion]
+    /// Per-app version selected for the next write.
+    private(set) var trialTargets: [String: SDKVersion]
 
     private let defaults = UserDefaults.standard
 
@@ -97,12 +103,16 @@ final class AppCatalog {
         } else {
             originals = [:]
         }
+        appliedTargets = (defaults.data(forKey: "appliedTargets")
+            .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
+        trialTargets = (defaults.data(forKey: "trialTargets")
+            .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
         selection = forced
     }
 
     func status(of app: InstalledApp) -> AppStatus {
         if forced.contains(app.id) || originals[app.id] != nil {
-            return app.sdk == .target ? .forced : (app.sdk < .target ? .drifted : .native)
+            return app.sdk == (appliedTargets[app.id] ?? .target) ? .forced : .drifted
         }
         return app.sdk >= .target ? .native : .legacy
     }
@@ -128,14 +138,26 @@ final class AppCatalog {
 
     func count(_ filter: AppFilter) -> Int { apps(for: filter, search: "").count }
 
+    func desiredSDK(for app: InstalledApp) -> SDKVersion {
+        trialTargets[app.id] ?? .target
+    }
+
+    func setTrialTarget(_ version: SDKVersion?, for app: InstalledApp) {
+        guard canToggle(app) else { return }
+        guard version == nil || version == .trial27 || version == .trialLatest else { return }
+        trialTargets[app.id] = version
+        selection.insert(app.id)
+        persist()
+    }
+
     /// bundleID -> desired SDK for every record that has to change.
     var pendingChanges: [String: SDKVersion] {
         var changes: [String: SDKVersion] = [:]
         for app in apps {
-            let wanted = selection.contains(app.id)
-            if wanted, app.sdk < .target {
-                changes[app.id] = .target
-            } else if !wanted, let original = originals[app.id], app.sdk == .target, original != .target {
+            if selection.contains(app.id) {
+                let desired = desiredSDK(for: app)
+                if app.sdk != desired && canToggle(app) { changes[app.id] = desired }
+            } else if let original = originals[app.id], app.sdk != original {
                 changes[app.id] = original
             }
         }
@@ -186,8 +208,13 @@ final class AppCatalog {
         let byID = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
         for (id, _) in originals where byID[id] == nil { originals[id] = nil }
         forced = forced.filter { byID[$0] != nil }
+        appliedTargets = appliedTargets.filter { byID[$0.key] != nil }
+        trialTargets = trialTargets.filter { byID[$0.key] != nil }
         for id in forced {
-            if let app = byID[id], app.sdk != .target, app.sdk < .target { originals[id] = app.sdk }
+            if let app = byID[id], app.sdk != (appliedTargets[id] ?? .target), app.sdk < .trial27 {
+                // The app was updated or rebuilt; its new recorded SDK is the restore point.
+                originals[id] = app.sdk
+            }
         }
         selection = selection.filter { byID[$0] != nil }
         persist()
@@ -200,7 +227,7 @@ final class AppCatalog {
         defer { applying = false }
         // Stage originals; a failed write must not claim that we changed the cache.
         var stagedOriginals = originals
-        for app in apps where changes[app.id] == .target && originals[app.id] == nil {
+        for app in apps where changes[app.id] != nil && selection.contains(app.id) && originals[app.id] == nil {
             stagedOriginals[app.id] = app.sdk
         }
         let payload = changes.mapValues { $0.triple }
@@ -211,8 +238,17 @@ final class AppCatalog {
         switch result {
         case .success(let summary):
             originals = stagedOriginals
-            for (id, version) in changes where version != .target { originals[id] = nil; forced.remove(id) }
-            for (id, version) in changes where version == .target { forced.insert(id) }
+            for (id, version) in changes {
+                if selection.contains(id) {
+                    forced.insert(id)
+                    appliedTargets[id] = version
+                } else {
+                    originals[id] = nil
+                    forced.remove(id)
+                    appliedTargets[id] = nil
+                    trialTargets[id] = nil
+                }
+            }
             persist()
             resultMessage = summary + "\n" + String(localized: "Restart the iPhone Duo so apps reload the new interface.")
         case .failure(let error):
@@ -224,5 +260,7 @@ final class AppCatalog {
     private func persist() {
         defaults.set(Array(forced), forKey: "forced")
         defaults.set(try? JSONEncoder().encode(originals), forKey: "originals")
+        defaults.set(try? JSONEncoder().encode(appliedTargets), forKey: "appliedTargets")
+        defaults.set(try? JSONEncoder().encode(trialTargets), forKey: "trialTargets")
     }
 }
