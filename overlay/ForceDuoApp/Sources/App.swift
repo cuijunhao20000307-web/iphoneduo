@@ -258,7 +258,7 @@ struct AppRow: View {
                     if wanted && app.sdk != catalog.desiredSDK(for: app) {
                         Tag(text: Text(verbatim: "→ \(catalog.desiredSDK(for: app))"), tint: .green)
                     }
-                    if !wanted && status == .forced { Tag(text: Text("→ original"), tint: .red) }
+                    if !wanted && catalog.originals[app.id] != nil { Tag(text: Text("→ original"), tint: .red) }
                 }
             }
             Spacer(minLength: 8)
@@ -278,15 +278,22 @@ struct AppRow: View {
                 .disabled(!catalog.canToggle(app))
         }
         .padding(.vertical, 2)
-        .contentShape(.rect)
-        .onTapGesture {
-            guard catalog.canToggle(app) else { return }
-            catalog.binding(for: app).wrappedValue.toggle()
-        }
-        .swipeActions(edge: .trailing) {
-            if status == .forced && wanted {
+        .disabled(catalog.applying || catalog.loading)
+        .contextMenu {
+            if catalog.originals[app.id] != nil {
                 Button("Restore original SDK", systemImage: "arrow.uturn.backward") {
-                    catalog.selection.remove(app.id)
+                    catalog.restoreOriginal(for: app)
+                }
+            }
+            ShareLink(item: catalog.diagnosticReport(for: app)) {
+                Label("Share SDK diagnostics", systemImage: "square.and.arrow.up")
+            }
+        }
+        .contentShape(.rect)
+        .swipeActions(edge: .trailing) {
+            if catalog.originals[app.id] != nil {
+                Button("Restore original SDK", systemImage: "arrow.uturn.backward") {
+                    catalog.restoreOriginal(for: app)
                 }
                 .tint(.orange)
             }

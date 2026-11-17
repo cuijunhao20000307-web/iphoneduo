@@ -75,3 +75,6 @@
 "Audio compatibility SDK" = "Audio compatibility SDK";
 "Turn on an app to force SDK 27.1. Use the waveform control for an audio compatibility test; turn off to restore the original SDK." = "Turn on an app to force SDK 27.1. Use the waveform control for an audio compatibility test; turn off to restore the original SDK.";
 "Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code." = "Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code.";
+
+"Share SDK diagnostics" = "Share SDK diagnostics";
+"SDK verification failed. Restore points were kept. Reload and try again." = "SDK verification failed. Restore points were kept. Reload and try again.";

@@ -143,7 +143,7 @@ final class AppCatalog {
     }
 
     func setTrialTarget(_ version: SDKVersion?, for app: InstalledApp) {
-        guard canToggle(app) else { return }
+        guard !applying && !loading && canToggle(app) else { return }
         guard version == nil || version == .trial27 || version == .trialLatest else { return }
         trialTargets[app.id] = version
         selection.insert(app.id)
@@ -168,17 +168,42 @@ final class AppCatalog {
         Binding(
             get: { self.selection.contains(app.id) },
             set: { on in
+                guard !self.applying && !self.loading else { return }
                 if on { self.selection.insert(app.id) } else { self.selection.remove(app.id) }
             })
     }
 
     func selectAllLegacy() {
+        guard !applying && !loading else { return }
         for app in apps where status(of: app) == .legacy || status(of: app) == .drifted { selection.insert(app.id) }
     }
 
-    func deselectAll() { selection.removeAll() }
+    func deselectAll() {
+        guard !applying && !loading else { return }
+        selection.removeAll()
+    }
+
+    func restoreOriginal(for app: InstalledApp) {
+        guard !applying && !loading, originals[app.id] != nil else { return }
+        selection.remove(app.id)
+    }
+
+    func diagnosticReport(for app: InstalledApp) -> String {
+        """
+        Force Duo recovery test
+        iOS: \(UIDevice.current.systemVersion)
+        App: \(app.name)
+        Bundle: \(app.id)
+        Recorded SDK: \(app.sdk)
+        Saved original SDK: \(originals[app.id]?.description ?? "unavailable")
+        Last applied SDK: \(appliedTargets[app.id]?.description ?? (forced.contains(app.id) ? SDKVersion.target.description : "none"))
+        Selected: \(selection.contains(app.id))
+        Pending SDK: \(pendingChanges[app.id]?.description ?? "none")
+        """
+    }
 
     func reload() async {
+        guard !loading && !applying else { return }
         loading = true
         errorMessage = nil
         defer { loading = false }
@@ -221,25 +246,41 @@ final class AppCatalog {
     }
 
     func apply() async {
+        guard !applying && !loading else { return }
         let changes = pendingChanges
         guard !changes.isEmpty else { return }
+        let requestedSelection = selection
         applying = true
+        errorMessage = nil
+        resultMessage = nil
         defer { applying = false }
-        // Stage originals; a failed write must not claim that we changed the cache.
-        var stagedOriginals = originals
-        for app in apps where changes[app.id] != nil && selection.contains(app.id) && originals[app.id] == nil {
-            stagedOriginals[app.id] = app.sdk
+        // Save restore points before writing, including if the process is interrupted.
+        for app in apps where changes[app.id] != nil && requestedSelection.contains(app.id) && originals[app.id] == nil {
+            originals[app.id] = app.sdk
         }
+        persist()
         let payload = changes.mapValues { $0.triple }
-        let result: Result<String, Error> = await Task.detached {
-            do { return .success(try FDEngine.shared.applyVersions(payload, dryRun: false)) } catch { return .failure(error) }
+        let result: Result<(String, [InstalledApp]), Error> = await Task.detached {
+            do {
+                let summary = try FDEngine.shared.applyVersions(payload, dryRun: false)
+                let verified = try FDEngine.shared.loadApps()
+                    .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
+                    .map(InstalledApp.init)
+                return .success((summary, verified))
+            } catch { return .failure(error) }
         }.value
         engineLog = FDEngine.shared.lastLog
         switch result {
-        case .success(let summary):
-            originals = stagedOriginals
+        case .success(let (summary, verified)):
+            apps = verified
+            let byID = Dictionary(uniqueKeysWithValues: verified.map { ($0.id, $0) })
+            var failed: [String] = []
             for (id, version) in changes {
-                if selection.contains(id) {
+                guard byID[id]?.sdk == version else {
+                    failed.append(id)
+                    continue // Keep the original and pending selection for retry.
+                }
+                if requestedSelection.contains(id) {
                     forced.insert(id)
                     appliedTargets[id] = version
                 } else {
@@ -250,11 +291,16 @@ final class AppCatalog {
                 }
             }
             persist()
-            resultMessage = summary + "\n" + String(localized: "Restart the iPhone Duo so apps reload the new interface.")
+            if failed.isEmpty {
+                resultMessage = summary + "\n" + String(localized: "Restart the iPhone Duo so apps reload the new interface.")
+            } else {
+                errorMessage = String(localized: "SDK verification failed. Restore points were kept. Reload and try again.") + "\n" + failed.sorted().joined(separator: "\n")
+            }
+            await loadIcons()
         case .failure(let error):
             errorMessage = error.localizedDescription
+            // Do not reload here: it would clear the error or reinterpret a partial write.
         }
-        await reload()
     }
 
     private func persist() {
