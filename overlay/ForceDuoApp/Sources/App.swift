@@ -204,7 +204,7 @@ struct AppListView: View {
                         AppRow(app: app)
                     }
                 } footer: {
-                    Text("Turn an app on to force SDK \(SDKVersion.target.description). Turn a forced app off to restore its original SDK.")
+                    Text("Turn on an app to force SDK 27.1. Use the waveform control for an audio compatibility test; turn off to restore the original SDK.")
                 }
             }
         }
@@ -255,11 +255,24 @@ struct AppRow: View {
                     Tag(text: Text(verbatim: "SDK \(app.sdk)"), tint: .secondary)
                     Tag(text: Text(status.label), tint: status.tint)
                     if !app.storeSigned { Tag(text: Text("Sideload"), tint: .purple) }
-                    if wanted && app.sdk < .target { Tag(text: Text(verbatim: "→ \(SDKVersion.target)"), tint: .green) }
+                    if wanted && app.sdk != catalog.desiredSDK(for: app) {
+                        Tag(text: Text(verbatim: "→ \(catalog.desiredSDK(for: app))"), tint: .green)
+                    }
                     if !wanted && status == .forced { Tag(text: Text("→ original"), tint: .red) }
                 }
             }
             Spacer(minLength: 8)
+            if wanted && catalog.canToggle(app) {
+                Menu {
+                    Button("SDK 27.1 (default)") { catalog.setTrialTarget(nil, for: app) }
+                    Button("Test SDK 27.0") { catalog.setTrialTarget(.trial27, for: app) }
+                    Button("Test SDK 27.2.1") { catalog.setTrialTarget(.trialLatest, for: app) }
+                } label: {
+                    Image(systemName: "waveform.path")
+                        .font(.body)
+                        .accessibilityLabel("Audio compatibility SDK")
+                }
+            }
             Toggle("", isOn: catalog.binding(for: app))
                 .labelsHidden()
                 .disabled(!catalog.canToggle(app))
@@ -386,6 +399,7 @@ struct CompatibilityHelpView: View {
                 Section("Game compatibility") {
                     Text("Force Duo changes an app\'s recorded SDK version. It cannot change the game\'s display or audio code. Some games may show a black screen or lose sound after unfolding the device or opening Control Center.")
                     Text("To recover: find the affected game, turn it off or swipe left and choose Restore original SDK, tap Apply, then restart the iPhone Duo.")
+                    Text("Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code.")
                 }
             }
             .navigationTitle("Game compatibility")
