@@ -280,6 +280,9 @@ struct AppRow: View {
         .padding(.vertical, 2)
         .disabled(catalog.applying || catalog.loading)
         .contextMenu {
+            Button("Recover SDK from installed app", systemImage: "arrow.counterclockwise") {
+                Task { await catalog.recoverOriginal(for: app) }
+            }
             if catalog.originals[app.id] != nil {
                 Button("Restore original SDK", systemImage: "arrow.uturn.backward") {
                     catalog.restoreOriginal(for: app)

@@ -188,6 +188,29 @@ final class AppCatalog {
         selection.remove(app.id)
     }
 
+    func recoverOriginal(for app: InstalledApp) async {
+        guard !applying && !loading else { return }
+        loading = true
+        errorMessage = nil
+        defer { loading = false }
+        let id = app.id
+        let result: Result<[NSNumber], Error> = await Task.detached {
+            do { return .success(try FDEngine.shared.recoverSDK(forBundleID: id)) }
+            catch { return .failure(error) }
+        }.value
+        engineLog = FDEngine.shared.lastLog
+        switch result {
+        case .success(let triple):
+            guard triple.count == 3 else { return }
+            originals[id] = SDKVersion(major: triple[0].intValue, minor: triple[1].intValue, patch: triple[2].intValue)
+            selection.remove(id)
+            persist()
+            resultMessage = String(localized: "Compiled SDK recovered. Tap Apply to restore it, then restart the phone.")
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func diagnosticReport(for app: InstalledApp) -> String {
         """
         Force Duo recovery test

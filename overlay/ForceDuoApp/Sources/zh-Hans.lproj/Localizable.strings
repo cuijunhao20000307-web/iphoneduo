@@ -78,3 +78,9 @@
 
 "Share SDK diagnostics" = "分享 SDK 诊断";
 "SDK verification failed. Restore points were kept. Reload and try again." = "SDK 核对未通过，已保留原始记录。请刷新后重试。";
+"Recover SDK from installed app" = "从安装文件找回原始 SDK";
+"Compiled SDK recovered. Tap Apply to restore it, then restart the phone." = "已读取应用编译 SDK。请点“应用”恢复，然后重启手机。";
+"Installed app not found. Reload and try again." = "找不到已安装的应用，请刷新后重试。";
+"Cannot read the installed app identity. No SDK was changed." = "无法读取安装文件或核对应用身份，未修改 SDK。";
+"Cannot read a supported executable header. No SDK was changed." = "无法读取受支持的程序头，未修改 SDK。";
+"Executable SDK is missing or ambiguous. No SDK was changed." = "程序内的 SDK 信息缺失或不一致，未修改 SDK。";

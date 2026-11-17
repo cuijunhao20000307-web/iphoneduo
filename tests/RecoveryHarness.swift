@@ -19,6 +19,7 @@ class FDEngine {
     var lastLog = "", storePath: String? = nil
     var record = FDAppRecord()
     var fail = false, ignoreWrite = false
+    func recoverSDK(forBundleID id: String) throws -> [NSNumber] { [26, 0, 0] }
     func loadApps() throws -> [FDAppRecord] { [record] }
     func applyVersions(_ payload: [String: [NSNumber]], dryRun: Bool) throws -> String {
         Thread.sleep(forTimeInterval: 0.1)
@@ -99,5 +100,15 @@ extension AppCatalog { func loadIcons() async {} }
         let recovered = AppCatalog()
         assert(recovered.originals["test.game"]?.major == 26 && c.errorMessage != nil)
         print("PASS: original SDK survives write failure and catalog recreation")
+        c = fresh()
+        FDEngine.shared.record.sdkMajor = 27
+        FDEngine.shared.record.sdkMinor = 1
+        c.apps = [InstalledApp(FDEngine.shared.record)]
+        assert(!c.canToggle(c.apps[0]))
+        await c.recoverOriginal(for: c.apps[0])
+        assert(c.pendingChanges["test.game"]?.major == 26)
+        await c.apply()
+        assert(c.apps[0].sdk.major == 26)
+        print("PASS: reinstall with no history can restore recovered SDK")
     }
 }

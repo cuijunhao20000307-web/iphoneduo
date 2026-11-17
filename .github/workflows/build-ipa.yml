@@ -48,6 +48,8 @@ jobs:
             overlay/ForceDuoApp/Sources/Model.swift tests/RecoveryHarness.swift \
             -o "$RUNNER_TEMP/recovery-tests"
           "$RUNNER_TEMP/recovery-tests"
+          xcrun clang -Wall -Werror tests/OriginalSDKTests.c -o "$RUNNER_TEMP/sdk-parser-tests"
+          "$RUNNER_TEMP/sdk-parser-tests"
 
       - name: Compile iOS app without signing
         run: |

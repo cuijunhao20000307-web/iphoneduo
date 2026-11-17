@@ -78,3 +78,9 @@
 
 "Share SDK diagnostics" = "Share SDK diagnostics";
 "SDK verification failed. Restore points were kept. Reload and try again." = "SDK verification failed. Restore points were kept. Reload and try again.";
+"Recover SDK from installed app" = "Recover SDK from installed app";
+"Compiled SDK recovered. Tap Apply to restore it, then restart the phone." = "Compiled SDK recovered. Tap Apply to restore it, then restart the phone.";
+"Installed app not found. Reload and try again." = "Installed app not found. Reload and try again.";
+"Cannot read the installed app identity. No SDK was changed." = "Cannot read the installed app identity. No SDK was changed.";
+"Cannot read a supported executable header. No SDK was changed." = "Cannot read a supported executable header. No SDK was changed.";
+"Executable SDK is missing or ambiguous. No SDK was changed." = "Executable SDK is missing or ambiguous. No SDK was changed.";
