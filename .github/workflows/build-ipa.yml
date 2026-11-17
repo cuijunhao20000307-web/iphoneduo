@@ -1,8 +1,8 @@
-name: Build Force Duo Chinese IPA
+name: Build Force Duo Audio SDK Trial IPA
 
 on:
   push:
-    branches: [main]
+    branches: [audio-sdk-trial]
   workflow_dispatch:
 
 permissions:
@@ -57,12 +57,12 @@ jobs:
           test -f "$app/ForceDuo"
           mkdir -p "$RUNNER_TEMP/IpaPayload/Payload"
           cp -R "$app" "$RUNNER_TEMP/IpaPayload/Payload/ForceDuo.app"
-          (cd "$RUNNER_TEMP/IpaPayload" && zip -qry "$GITHUB_WORKSPACE/ForceDuo-zh-Hans-unsigned.ipa" Payload)
-          unzip -t ForceDuo-zh-Hans-unsigned.ipa | tail -1
+          (cd "$RUNNER_TEMP/IpaPayload" && zip -qry "$GITHUB_WORKSPACE/ForceDuo-audio-sdk-trial-unsigned.ipa" Payload)
+          unzip -t ForceDuo-audio-sdk-trial-unsigned.ipa | tail -1
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ForceDuo-zh-Hans-unsigned-IPA
-          path: ForceDuo-zh-Hans-unsigned.ipa
+          name: ForceDuo-audio-sdk-trial-unsigned-IPA
+          path: ForceDuo-audio-sdk-trial-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
