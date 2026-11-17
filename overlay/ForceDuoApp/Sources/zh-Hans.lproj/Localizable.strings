@@ -69,3 +69,9 @@
 "OK" = "确定";
 "Restore original SDK" = "恢复原始 SDK";
 "To recover: find the affected game, turn it off or swipe left and choose Restore original SDK, tap Apply, then restart the iPhone Duo." = "恢复方法：找到出问题的游戏，关闭开关，或向左滑动并选择“恢复原始 SDK”；然后点击“应用”并重启 iPhone Duo。";
+"SDK 27.1 (default)" = "SDK 27.1（默认）";
+"Test SDK 27.0" = "测试 SDK 27.0";
+"Test SDK 27.2.1" = "测试 SDK 27.2.1";
+"Audio compatibility SDK" = "音频兼容 SDK";
+"Turn on an app to force SDK 27.1. Use the waveform control for an audio compatibility test; turn off to restore the original SDK." = "开启应用默认强制 SDK 27.1；点波形按钮测试音频兼容版本；关闭开关可恢复原始 SDK。";
+"Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code." = "音频测试：选择一个游戏，点击波形图标试用 SDK 27.0 或 27.2.1。每次只修改一个游戏，应用后重启再测试。SDK 27.0 可能无法铺满内屏；这些设置不会修改游戏的音频代码。";
