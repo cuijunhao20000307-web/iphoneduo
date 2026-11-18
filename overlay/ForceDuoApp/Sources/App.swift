@@ -265,7 +265,7 @@ struct AppRow: View {
                     if wanted && app.sdk != catalog.desiredSDK(for: app) {
                         Tag(text: Text(verbatim: "→ \(catalog.desiredSDK(for: app))"), tint: .green)
                     }
-                    if !wanted && catalog.originals[app.id] != nil { Tag(text: Text("→ original"), tint: .red) }
+                    if catalog.hasPendingRestore(for: app) { Tag(text: Text("→ original"), tint: .red) }
                 }
             }
             Spacer(minLength: 8)
@@ -307,6 +307,9 @@ struct AppRow: View {
             }
         } message: {
             Text("For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code.")
+            if catalog.hasPendingRestore(for: app) {
+                Text("Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it.")
+            }
         }
         .contextMenu {
             Button("Recover SDK from installed app", systemImage: "arrow.counterclockwise") {

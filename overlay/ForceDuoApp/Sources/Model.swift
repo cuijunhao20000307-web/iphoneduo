@@ -92,6 +92,8 @@ final class AppCatalog {
     private var originalContainers: [String: String]
     /// Cache SDK observed when we recovered the original directly from an executable.
     private var recoverySnapshots: [String: SDKVersion]
+    /// Pending restores survive relaunch even when compatibility protection is removed.
+    private var restoreRequests: Set<String>
     /// Overrides that may have reached the live cache before verification completed.
     private var unverifiedOverrides: [String: SDKVersion]
     /// The version last written by this app; old installs default to 27.1.
@@ -108,12 +110,9 @@ final class AppCatalog {
 
     init() {
         forced = Set(defaults.stringArray(forKey: "forced") ?? [])
-        if let data = defaults.data(forKey: "originals"),
-           let decoded = try? JSONDecoder().decode([String: SDKVersion].self, from: data) {
-            originals = decoded
-        } else {
-            originals = [:]
-        }
+        let savedOriginals = defaults.data(forKey: "originals")
+            .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) } ?? [:]
+        originals = savedOriginals
         originalContainers = defaults.dictionary(forKey: "originalContainers") as? [String: String] ?? [:]
         recoverySnapshots = (defaults.data(forKey: "recoverySnapshots")
             .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
@@ -123,8 +122,11 @@ final class AppCatalog {
             .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
         trialTargets = (defaults.data(forKey: "trialTargets")
             .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
-        compatibilityProtected = Set(defaults.stringArray(forKey: "compatibilityProtected") ?? [])
-        selection = forced.subtracting(compatibilityProtected)
+        let protectedApps = Set(defaults.stringArray(forKey: "compatibilityProtected") ?? [])
+        compatibilityProtected = protectedApps
+        restoreRequests = defaults.stringArray(forKey: "restoreRequests").map { Set($0) }
+            ?? protectedApps.intersection(savedOriginals.keys)
+        selection = forced.subtracting(compatibilityProtected).subtracting(restoreRequests)
     }
 
     func status(of app: InstalledApp) -> AppStatus {
@@ -164,6 +166,7 @@ final class AppCatalog {
         guard !applying && !loading && canToggle(app) else { return }
         guard version == nil || version == .trial27 || version == .trialLatest else { return }
         trialTargets[app.id] = version
+        restoreRequests.remove(app.id)
         selection.insert(app.id)
         persist()
     }
@@ -172,15 +175,19 @@ final class AppCatalog {
     var pendingChanges: [String: SDKVersion] {
         var changes: [String: SDKVersion] = [:]
         for app in apps {
-            if selection.contains(app.id) && !compatibilityProtected.contains(app.id) && app.id != Bundle.main.bundleIdentifier {
-                let desired = desiredSDK(for: app)
-                if app.sdk != desired && canToggle(app) { changes[app.id] = desired }
-            } else if let original = originals[app.id], app.sdk != original,
-                      originalContainers[app.id] == nil || originalContainers[app.id] == app.container {
-                changes[app.id] = original
-            }
+            changes[app.id] = pendingChange(for: app)
         }
         return changes
+    }
+
+    private func pendingChange(for app: InstalledApp) -> SDKVersion? {
+        if selection.contains(app.id) && !restoreRequests.contains(app.id) && canToggle(app) {
+            let desired = desiredSDK(for: app)
+            return app.sdk != desired ? desired : nil
+        }
+        guard let original = originals[app.id], app.sdk != original,
+              originalContainers[app.id] == nil || originalContainers[app.id] == app.container else { return nil }
+        return original
     }
 
     func binding(for app: InstalledApp) -> Binding<Bool> {
@@ -190,7 +197,9 @@ final class AppCatalog {
                 guard !self.applying && !self.loading else { return }
                 if on {
                     guard self.canToggle(app) else { return }
+                    let cancelledRestore = self.restoreRequests.remove(app.id) != nil
                     self.selection.insert(app.id)
+                    if cancelledRestore { self.persist() }
                 } else if self.originals[app.id] != nil {
                     self.restoreOriginal(for: app)
                 } else {
@@ -201,7 +210,8 @@ final class AppCatalog {
 
     func selectAllLegacy() {
         guard !applying && !loading else { return }
-        for app in apps where canToggle(app) && (status(of: app) == .legacy || status(of: app) == .drifted) {
+        for app in apps where canToggle(app) && !restoreRequests.contains(app.id) &&
+            (status(of: app) == .legacy || status(of: app) == .drifted) {
             selection.insert(app.id)
         }
     }
@@ -210,7 +220,7 @@ final class AppCatalog {
         guard !applying && !loading else { return }
         for app in apps where originals[app.id] != nil {
             compatibilityProtected.insert(app.id)
-            trialTargets[app.id] = nil
+            restoreRequests.insert(app.id)
         }
         selection.removeAll()
         persist()
@@ -220,7 +230,7 @@ final class AppCatalog {
         guard !applying && !loading, originals[app.id] != nil else { return }
         selection.remove(app.id)
         compatibilityProtected.insert(app.id)
-        trialTargets[app.id] = nil
+        restoreRequests.insert(app.id)
         persist()
     }
 
@@ -229,6 +239,10 @@ final class AppCatalog {
         compatibilityProtected.remove(app.id)
         // Removing protection does not stage another SDK write.
         persist()
+    }
+
+    func hasPendingRestore(for app: InstalledApp) -> Bool {
+        restoreRequests.contains(app.id) && pendingChange(for: app) != nil
     }
 
     func recoverOriginal(for app: InstalledApp) async {
@@ -279,6 +293,7 @@ final class AppCatalog {
             recoverySnapshots[id] = installed.sdk
             selection.remove(id)
             compatibilityProtected.insert(id)
+            restoreRequests.insert(id)
             reconcile()
             resultMessage = originals[id] == nil
                 ? String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
@@ -298,7 +313,7 @@ final class AppCatalog {
         Saved original SDK: \(originals[app.id]?.description ?? "unavailable")
         Last applied SDK: \(appliedTargets[app.id]?.description ?? (forced.contains(app.id) ? SDKVersion.target.description : "none"))
         Selected: \(selection.contains(app.id))
-        Pending SDK: \(pendingChanges[app.id]?.description ?? "none")
+        Pending SDK: \(pendingChange(for: app)?.description ?? "none")
         Compatibility protection: \(compatibilityProtected.contains(app.id))
         """
     }
@@ -412,12 +427,12 @@ final class AppCatalog {
         trialTargets = trialTargets.filter { byID[$0.key] != nil }
         // A previous write may have succeeded before the process was killed or its
         // readback failed. A fresh read is enough to finish an already-restored app.
-        for id in compatibilityProtected {
+        for id in restoreRequests {
             if let app = byID[id], let original = originals[id], app.sdk == original {
                 clearTracking(for: id)
             }
         }
-        selection = selection.filter { byID[$0] != nil }.subtracting(compatibilityProtected)
+        selection = selection.filter { byID[$0] != nil }.subtracting(compatibilityProtected).subtracting(restoreRequests)
         persist()
     }
 
@@ -425,7 +440,7 @@ final class AppCatalog {
         guard !applying && !loading else { return }
         let changes = pendingChanges
         guard !changes.isEmpty else { return }
-        var requestedSelection = selection.subtracting(compatibilityProtected)
+        var requestedSelection = selection.subtracting(compatibilityProtected).subtracting(restoreRequests)
         if let selfID = Bundle.main.bundleIdentifier { requestedSelection.remove(selfID) }
         applying = true
         errorMessage = nil
@@ -501,6 +516,7 @@ final class AppCatalog {
         originals[id] = nil
         originalContainers[id] = nil
         recoverySnapshots[id] = nil
+        restoreRequests.remove(id)
         unverifiedOverrides[id] = nil
         forced.remove(id)
         appliedTargets[id] = nil
@@ -512,6 +528,7 @@ final class AppCatalog {
         defaults.set(try? JSONEncoder().encode(originals), forKey: "originals")
         defaults.set(originalContainers, forKey: "originalContainers")
         defaults.set(try? JSONEncoder().encode(recoverySnapshots), forKey: "recoverySnapshots")
+        defaults.set(Array(restoreRequests).sorted(), forKey: "restoreRequests")
         defaults.set(try? JSONEncoder().encode(unverifiedOverrides), forKey: "unverifiedOverrides")
         defaults.set(try? JSONEncoder().encode(appliedTargets), forKey: "appliedTargets")
         defaults.set(try? JSONEncoder().encode(trialTargets), forKey: "trialTargets")

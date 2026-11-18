@@ -99,3 +99,4 @@
 "The app was updated during recovery. Reload and try again." = "The app was updated during recovery. Reload and try again.";
 "The cache changed while it was being read. Reload and try again." = "The cache changed while it was being read. Reload and try again.";
 "Diagnostics saved in Files → On My iPhone → Force Duo → Diagnostics." = "Diagnostics saved in Files → On My iPhone → Force Duo → Diagnostics.";
+"Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it." = "Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it.";

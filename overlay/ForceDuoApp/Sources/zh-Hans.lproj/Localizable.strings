@@ -99,3 +99,4 @@
 "The app was updated during recovery. Reload and try again." = "恢复过程中应用已更新。请刷新列表后重试。";
 "The cache changed while it was being read. Reload and try again." = "系统缓存在读取时发生变化。请刷新列表后重试。";
 "Diagnostics saved in Files → On My iPhone → Force Duo → Diagnostics." = "诊断已保存。前往“文件”→“我的 iPhone”→“Force Duo”→“Diagnostics”查看。";
+"Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it." = "解除兼容保护后，待恢复操作仍会保留。重新打开此应用的开关可取消恢复。";

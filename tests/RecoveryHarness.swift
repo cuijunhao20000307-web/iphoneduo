@@ -71,7 +71,7 @@ extension AppCatalog {
 
 @main struct RecoveryTests {
     @MainActor static func fresh() -> AppCatalog {
-        for key in ["forced", "originals", "originalContainers", "recoverySnapshots", "unverifiedOverrides", "appliedTargets", "trialTargets", "compatibilityProtected"] {
+        for key in ["forced", "originals", "originalContainers", "recoverySnapshots", "restoreRequests", "unverifiedOverrides", "appliedTargets", "trialTargets", "compatibilityProtected"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         FDEngine.shared.record = FDAppRecord()
@@ -284,6 +284,42 @@ extension AppCatalog {
         assert(c.pendingChanges.isEmpty && c.originals.isEmpty)
         assert(c.compatibilityProtected.contains("test.game"))
         print("PASS: subsequent SDK changes invalidate the queued executable recovery")
+
+        c = fresh()
+        c.setTrialTarget(.trialLatest, for: c.apps[0])
+        await c.apply()
+        c.restoreOriginal(for: c.apps[0])
+        c.removeCompatibilityProtection(for: c.apps[0])
+        let pendingRestore = AppCatalog()
+        await pendingRestore.reload()
+        let pendingApp = pendingRestore.apps[0]
+        assert(!pendingRestore.selection.contains(pendingApp.id))
+        assert(!pendingRestore.compatibilityProtected.contains(pendingApp.id))
+        assert(pendingRestore.hasPendingRestore(for: pendingApp))
+        assert(pendingRestore.pendingChanges[pendingApp.id]?.major == 26)
+        pendingRestore.binding(for: pendingApp).wrappedValue = true
+        assert(pendingRestore.pendingChanges.isEmpty)
+        assert(pendingRestore.desiredSDK(for: pendingApp) == .trialLatest)
+        let cancelled = AppCatalog()
+        await cancelled.reload()
+        assert(cancelled.selection.contains(pendingApp.id) && cancelled.pendingChanges.isEmpty)
+        print("PASS: removing protection preserves recovery after relaunch; turning back on keeps the applied trial SDK")
+
+        c = fresh()
+        FDEngine.shared.record.sdkMajor = 27
+        FDEngine.shared.record.sdkMinor = 2
+        await c.recoverOriginal(for: c.apps[0])
+        UserDefaults.standard.removeObject(forKey: "restoreRequests")
+        let migrated = AppCatalog()
+        await migrated.reload()
+        let migratedApp = migrated.apps[0]
+        assert(migrated.hasPendingRestore(for: migratedApp))
+        migrated.removeCompatibilityProtection(for: migratedApp)
+        migrated.selectAllLegacy()
+        assert(migrated.selection.isEmpty && migrated.pendingChanges[migratedApp.id]?.major == 26)
+        await migrated.apply()
+        assert(migrated.apps[0].sdk.major == 26 && migrated.originals.isEmpty)
+        print("PASS: upgrades preserve queued recovery and bulk enable cannot cancel it")
 
         c = fresh()
         c.engineLog = "Cache lock 5 ms."
