@@ -100,3 +100,7 @@
 "The cache changed while it was being read. Reload and try again." = "系统缓存在读取时发生变化。请刷新列表后重试。";
 "Diagnostics saved in Files → On My iPhone → Force Duo → Diagnostics." = "诊断已保存。前往“文件”→“我的 iPhone”→“Force Duo”→“Diagnostics”查看。";
 "Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it." = "解除兼容保护后，待恢复操作仍会保留。重新打开此应用的开关可取消恢复。";
+"Restore only this app for the sound test" = "仅恢复此应用，测试声音";
+"For the sound test, restore only this app to turn off its forced adaptation. Restart the phone, then test unfolding and Notification Center separately." = "恢复后，此应用会退出强制适配。请重启手机，再分别测试翻开切到内屏和下拉、收起通知中心后的声音。";
+"The app record changed. Refresh and try the single-app restore again." = "应用记录发生变化。请刷新列表后重新尝试单独恢复。";
+"Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately." = "请重启 iPhone Duo，再分别测试游戏切到内屏，以及下拉并收起通知中心后的声音。";

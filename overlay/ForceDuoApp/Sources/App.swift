@@ -294,6 +294,9 @@ struct AppRow: View {
         .padding(.vertical, 2)
         .disabled(catalog.applying || catalog.loading)
         .confirmationDialog("Sound / black screen recovery", isPresented: $showRecovery, titleVisibility: .visible) {
+            Button("Restore only this app for the sound test") {
+                Task { await catalog.restoreAudioBaseline(for: app) }
+            }
             Button("Recover SDK from installed app") {
                 Task { await catalog.recoverOriginal(for: app) }
             }
@@ -306,7 +309,7 @@ struct AppRow: View {
                 }
             }
         } message: {
-            Text("For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code.")
+            Text("For the sound test, restore only this app to turn off its forced adaptation. Restart the phone, then test unfolding and Notification Center separately.")
             if catalog.hasPendingRestore(for: app) {
                 Text("Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it.")
             }

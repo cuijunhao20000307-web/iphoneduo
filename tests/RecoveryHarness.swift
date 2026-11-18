@@ -18,6 +18,8 @@ class FDEngine {
     static let shared = FDEngine()
     var lastLog = "", storePath: String? = nil
     var record = FDAppRecord()
+    var extraRecords: [FDAppRecord] = []
+    var appliedIDs: Set<String> = []
     var fail = false, ignoreWrite = false, failRead = false, failRecovery = false
     var recoveredSDK: [NSNumber] = [26, 0, 0]
     var loadCount = 0
@@ -40,21 +42,28 @@ class FDEngine {
     func loadApps() throws -> [FDAppRecord] {
         loadCount += 1
         if failRead { throw NSError(domain: "test-read", code: 1) }
-        return [record]
+        return [record] + extraRecords
     }
     func applyVersions(_ payload: [String: [NSNumber]], expectedSDKs: [String: [NSNumber]]?,
                        expectedContainers: [String: String]?, dryRun: Bool) throws -> String {
         Thread.sleep(forTimeInterval: 0.1)
         if fail { throw NSError(domain: "test-write", code: 1) }
-        let current = [record.sdkMajor, record.sdkMinor, record.sdkPatch].map { NSNumber(value: $0) }
-        guard expectedContainers?[record.bundleID] == record.containerUUID, expectedSDKs?[record.bundleID] == current else {
-            throw NSError(domain: "test-stale-write", code: 1)
+        let records = Dictionary(uniqueKeysWithValues: ([record] + extraRecords).map { ($0.bundleID, $0) })
+        for id in payload.keys {
+            guard let app = records[id], expectedContainers?[id] == app.containerUUID,
+                  expectedSDKs?[id] == [app.sdkMajor, app.sdkMinor, app.sdkPatch].map({ NSNumber(value: $0) }) else {
+                throw NSError(domain: "test-stale-write", code: 1)
+            }
         }
-        if !ignoreWrite, let v = payload[record.bundleID] {
-            record.sdkMajor = v[0].intValue
-            record.sdkMinor = v[1].intValue
-            record.sdkPatch = v[2].intValue
-            if replaceAfterWrite { record.containerUUID = "updated-after-write" }
+        appliedIDs = Set(payload.keys)
+        if !ignoreWrite {
+            for (id, version) in payload {
+                guard let app = records[id] else { continue }
+                app.sdkMajor = version[0].intValue
+                app.sdkMinor = version[1].intValue
+                app.sdkPatch = version[2].intValue
+                if replaceAfterWrite { app.containerUUID = "updated-after-write" }
+            }
         }
         return "written"
     }
@@ -75,6 +84,8 @@ extension AppCatalog {
             UserDefaults.standard.removeObject(forKey: key)
         }
         FDEngine.shared.record = FDAppRecord()
+        FDEngine.shared.extraRecords = []
+        FDEngine.shared.appliedIDs = []
         FDEngine.shared.fail = false
         FDEngine.shared.ignoreWrite = false
         FDEngine.shared.failRead = false
@@ -320,6 +331,37 @@ extension AppCatalog {
         await migrated.apply()
         assert(migrated.apps[0].sdk.major == 26 && migrated.originals.isEmpty)
         print("PASS: upgrades preserve queued recovery and bulk enable cannot cancel it")
+
+        c = fresh()
+        await enable(c)
+        let other = FDAppRecord()
+        other.bundleID = "test.other"
+        other.containerUUID = "other-container"
+        FDEngine.shared.extraRecords = [other]
+        await c.reload()
+        let primaryApp = c.apps[0]
+        c.setTrialTarget(.trialLatest, for: c.apps[1])
+        FDEngine.shared.failRecovery = true
+        await c.restoreAudioBaseline(for: primaryApp)
+        assert(c.errorMessage == nil && c.resultMessage != nil)
+        assert(FDEngine.shared.appliedIDs == [primaryApp.id] && other.sdkMajor == 26)
+        assert(c.apps[0].sdk.major == 26 && c.compatibilityProtected.contains(primaryApp.id))
+        assert(c.pendingChanges == [other.bundleID: .trialLatest])
+        print("PASS: sound baseline uses the saved SDK and writes only the requested app")
+
+        c = fresh()
+        FDEngine.shared.record.sdkMajor = 27
+        FDEngine.shared.record.sdkMinor = 1
+        await c.reload()
+        await c.restoreAudioBaseline(for: c.apps[0])
+        assert(FDEngine.shared.appliedIDs == ["test.game"] && c.apps[0].sdk.major == 26)
+        assert(c.errorMessage == nil && c.resultMessage != nil)
+        print("PASS: sound baseline recovers from the executable if history is unavailable")
+
+        c = fresh()
+        await c.restoreAudioBaseline(for: c.apps[0])
+        assert(FDEngine.shared.appliedIDs.isEmpty && c.resultMessage != nil && c.errorMessage == nil)
+        print("PASS: a baseline already matching the executable needs no write")
 
         c = fresh()
         c.engineLog = "Cache lock 5 ms."

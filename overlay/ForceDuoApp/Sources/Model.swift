@@ -245,7 +245,7 @@ final class AppCatalog {
         restoreRequests.contains(app.id) && pendingChange(for: app) != nil
     }
 
-    func recoverOriginal(for app: InstalledApp) async {
+    func recoverOriginal(for app: InstalledApp, announcePending: Bool = true) async {
         guard !applying && !loading else { return }
         loading = true
         errorMessage = nil
@@ -295,12 +295,36 @@ final class AppCatalog {
             compatibilityProtected.insert(id)
             restoreRequests.insert(id)
             reconcile()
-            resultMessage = originals[id] == nil
-                ? String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
-                : String(localized: "Compiled SDK recovered. Tap Apply to restore it, then restart the phone.")
+            if originals[id] == nil {
+                resultMessage = String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
+            } else if announcePending {
+                resultMessage = String(localized: "Compiled SDK recovered. Tap Apply to restore it, then restart the phone.")
+            }
         case .failure(let error):
             errorMessage = error.localizedDescription
         }
+    }
+
+    func restoreAudioBaseline(for app: InstalledApp) async {
+        guard !loading && !applying else { return }
+        resultMessage = nil
+        errorMessage = nil
+        guard let current = apps.first(where: { $0.id == app.id && $0.container == app.container }) else {
+            errorMessage = String(localized: "Installed app not found. Reload and try again.")
+            return
+        }
+        if let original = originals[current.id], originalContainers[current.id] == current.container {
+            restoreOriginal(for: current)
+            if current.sdk == original {
+                reconcile()
+                resultMessage = String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
+                return
+            }
+        } else {
+            await recoverOriginal(for: current, announcePending: false)
+            guard errorMessage == nil, resultMessage == nil else { return }
+        }
+        await apply(onlyRestoreFor: current)
     }
 
     func diagnosticReport(for app: InstalledApp) -> String {
@@ -436,9 +460,20 @@ final class AppCatalog {
         persist()
     }
 
-    func apply() async {
+    func apply(onlyRestoreFor target: InstalledApp? = nil) async {
         guard !applying && !loading else { return }
-        let changes = pendingChanges
+        let changes: [String: SDKVersion]
+        if let target {
+            guard let current = apps.first(where: { $0.id == target.id && $0.container == target.container }),
+                  restoreRequests.contains(current.id),
+                  let version = pendingChange(for: current) else {
+                errorMessage = String(localized: "The app record changed. Refresh and try the single-app restore again.")
+                return
+            }
+            changes = [current.id: version]
+        } else {
+            changes = pendingChanges
+        }
         guard !changes.isEmpty else { return }
         var requestedSelection = selection.subtracting(compatibilityProtected).subtracting(restoreRequests)
         if let selfID = Bundle.main.bundleIdentifier { requestedSelection.remove(selfID) }
@@ -501,7 +536,10 @@ final class AppCatalog {
             }
             reconcile()
             if failed.isEmpty {
-                resultMessage = summary + "\n" + String(localized: "Restart the iPhone Duo so apps reload the new interface.")
+                let nextStep = target == nil
+                    ? String(localized: "Restart the iPhone Duo so apps reload the new interface.")
+                    : String(localized: "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately.")
+                resultMessage = summary + "\n" + nextStep
             } else {
                 errorMessage = String(localized: "SDK verification failed. Restore points were kept. Reload and try again.") + "\n" + failed.sorted().joined(separator: "\n")
             }
