@@ -20,6 +20,7 @@ class FDEngine {
     var record = FDAppRecord()
     var extraRecords: [FDAppRecord] = []
     var appliedIDs: Set<String> = []
+    var writeChecks = 0
     var fail = false, ignoreWrite = false, failRead = false, failRecovery = false
     var recoveredSDK: [NSNumber] = [26, 0, 0]
     var loadCount = 0
@@ -47,6 +48,7 @@ class FDEngine {
     func applyVersions(_ payload: [String: [NSNumber]], expectedSDKs: [String: [NSNumber]]?,
                        expectedContainers: [String: String]?, dryRun: Bool) throws -> String {
         Thread.sleep(forTimeInterval: 0.1)
+        writeChecks += 1
         if fail { throw NSError(domain: "test-write", code: 1) }
         let records = Dictionary(uniqueKeysWithValues: ([record] + extraRecords).map { ($0.bundleID, $0) })
         for id in payload.keys {
@@ -55,9 +57,9 @@ class FDEngine {
                 throw NSError(domain: "test-stale-write", code: 1)
             }
         }
-        appliedIDs = Set(payload.keys)
+        appliedIDs = Set(payload.keys.filter { payload[$0] != expectedSDKs?[$0] })
         if !ignoreWrite {
-            for (id, version) in payload {
+            for (id, version) in payload where appliedIDs.contains(id) {
                 guard let app = records[id] else { continue }
                 app.sdkMajor = version[0].intValue
                 app.sdkMinor = version[1].intValue
@@ -86,6 +88,7 @@ extension AppCatalog {
         FDEngine.shared.record = FDAppRecord()
         FDEngine.shared.extraRecords = []
         FDEngine.shared.appliedIDs = []
+        FDEngine.shared.writeChecks = 0
         FDEngine.shared.fail = false
         FDEngine.shared.ignoreWrite = false
         FDEngine.shared.failRead = false
@@ -362,6 +365,30 @@ extension AppCatalog {
         await c.restoreAudioBaseline(for: c.apps[0])
         assert(FDEngine.shared.appliedIDs.isEmpty && c.resultMessage != nil && c.errorMessage == nil)
         print("PASS: a baseline already matching the executable needs no write")
+
+        c = fresh()
+        c.selection.insert("test.game")
+        FDEngine.shared.fail = true
+        await c.apply() // Save the original before a failed first write.
+        FDEngine.shared.fail = false
+        let matchingChecks = FDEngine.shared.writeChecks
+        await c.restoreAudioBaseline(for: c.apps[0])
+        assert(FDEngine.shared.writeChecks == matchingChecks + 1 && FDEngine.shared.appliedIDs.isEmpty)
+        assert(c.errorMessage == nil && c.resultMessage != nil && c.originals.isEmpty)
+        print("PASS: a saved baseline that already matches is checked against the live cache without writing")
+
+        c = fresh()
+        c.selection.insert("test.game")
+        FDEngine.shared.fail = true
+        await c.apply()
+        FDEngine.shared.fail = false
+        FDEngine.shared.record.sdkMajor = 27
+        FDEngine.shared.record.sdkMinor = 1
+        let staleChecks = FDEngine.shared.writeChecks
+        await c.restoreAudioBaseline(for: c.apps[0])
+        assert(FDEngine.shared.writeChecks == staleChecks + 1 && FDEngine.shared.appliedIDs.isEmpty)
+        assert(c.errorMessage != nil && c.resultMessage == nil && c.originals["test.game"]?.major == 26)
+        print("PASS: a stale list cannot falsely report a saved baseline already restored")
 
         c = fresh()
         c.engineLog = "Cache lock 5 ms."

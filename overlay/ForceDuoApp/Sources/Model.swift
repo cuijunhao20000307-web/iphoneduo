@@ -313,13 +313,8 @@ final class AppCatalog {
             errorMessage = String(localized: "Installed app not found. Reload and try again.")
             return
         }
-        if let original = originals[current.id], originalContainers[current.id] == current.container {
+        if originals[current.id] != nil, originalContainers[current.id] == current.container {
             restoreOriginal(for: current)
-            if current.sdk == original {
-                reconcile()
-                resultMessage = String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
-                return
-            }
         } else {
             await recoverOriginal(for: current, announcePending: false)
             guard errorMessage == nil, resultMessage == nil else { return }
@@ -463,15 +458,21 @@ final class AppCatalog {
     func apply(onlyRestoreFor target: InstalledApp? = nil) async {
         guard !applying && !loading else { return }
         let changes: [String: SDKVersion]
+        let verifyOnly: Bool
         if let target {
             guard let current = apps.first(where: { $0.id == target.id && $0.container == target.container }),
                   restoreRequests.contains(current.id),
-                  let version = pendingChange(for: current) else {
+                  originalContainers[current.id] == current.container,
+                  let original = originals[current.id] else {
                 errorMessage = String(localized: "The app record changed. Refresh and try the single-app restore again.")
                 return
             }
-            changes = [current.id: version]
+            // Even if the list already shows the original SDK, pass the observed
+            // record to the engine before declaring that no write is needed.
+            verifyOnly = current.sdk == original
+            changes = [current.id: original]
         } else {
+            verifyOnly = false
             changes = pendingChanges
         }
         guard !changes.isEmpty else { return }
@@ -536,10 +537,14 @@ final class AppCatalog {
             }
             reconcile()
             if failed.isEmpty {
-                let nextStep = target == nil
-                    ? String(localized: "Restart the iPhone Duo so apps reload the new interface.")
-                    : String(localized: "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately.")
-                resultMessage = summary + "\n" + nextStep
+                if verifyOnly {
+                    resultMessage = String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
+                } else {
+                    let nextStep = target == nil
+                        ? String(localized: "Restart the iPhone Duo so apps reload the new interface.")
+                        : String(localized: "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately.")
+                    resultMessage = summary + "\n" + nextStep
+                }
             } else {
                 errorMessage = String(localized: "SDK verification failed. Restore points were kept. Reload and try again.") + "\n" + failed.sorted().joined(separator: "\n")
             }
