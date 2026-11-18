@@ -94,3 +94,7 @@
 "Remove compatibility protection" = "解除兼容保护";
 "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed." = "当前 SDK 记录已经与安装程序一致，已启用兼容保护，无需写入缓存。若仍有静音或黑屏，请分享该应用的诊断信息。";
 "For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code." = "下拉通知中心、控制中心、合盖或展开后无声，或应用启动黑屏时：找回该应用的原始 SDK，点“应用”并重启手机。这会撤销该应用的强制适配，并防止“全选”再次启用。兼容恢复不会修改该应用内部的音频或画面代码。";
+"%@ changed since the list was loaded. Reload before applying. Nothing written." = "载入列表后，%@ 的安装记录已变更。请刷新列表后重试，本次未写入。";
+"An app is no longer installed. Reload before applying. Nothing written." = "要修改的应用已不在安装列表中。请刷新列表，本次未写入。";
+"The app was updated during recovery. Reload and try again." = "恢复过程中应用已更新。请刷新列表后重试。";
+"The cache changed while it was being read. Reload and try again." = "系统缓存在读取时发生变化。请刷新列表后重试。";

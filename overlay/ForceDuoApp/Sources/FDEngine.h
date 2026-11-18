@@ -26,17 +26,21 @@ extern NSErrorDomain const FDErrorDomain;
 /// Grants access to the lsd cache with worse_query, reads and parses every user app.
 - (nullable NSArray<FDAppRecord *> *)loadApps:(NSError **)error;
 
-/// bundleID -> @[major, minor, patch]. Writes only the SDK fields of those records
-/// (and the store checksum), verifies the result, and returns a human-readable summary.
+/// Version dictionaries map bundle IDs to @[major, minor, patch]. Real writes require
+/// the observed SDK and installation container for every requested app.
 - (nullable NSString *)applyVersions:(NSDictionary<NSString *, NSArray<NSNumber *> *> *)versions
+                        expectedSDKs:(nullable NSDictionary<NSString *, NSArray<NSNumber *> *> *)expectedSDKs
+                  expectedContainers:(nullable NSDictionary<NSString *, NSString *> *)expectedContainers
                               dryRun:(BOOL)dryRun
-                               error:(NSError **)error;
+                               error:(NSError **)error
+    NS_SWIFT_NAME(applyVersions(_:expectedSDKs:expectedContainers:dryRun:));
 
 /// Read-only: copies the active store into Documents/Diagnostics with a layout report.
 - (nullable NSString *)exportDiagnostics:(NSError **)error;
 
 - (nullable NSArray<NSNumber *> *)recoverSDKForBundleID:(NSString *)bundleID
-                                                 error:(NSError **)error NS_SWIFT_NAME(recoverSDK(forBundleID:));
+                                      expectedContainer:(NSString *)container
+                                                 error:(NSError **)error NS_SWIFT_NAME(recoverSDK(forBundleID:expectedContainer:));
 + (NSString *)deviceModel;
 @end
 

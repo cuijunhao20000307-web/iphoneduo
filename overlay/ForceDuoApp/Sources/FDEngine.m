@@ -198,8 +198,12 @@ static NSArray<FDAppRecord *> *parseApps(NSData *store, NSMutableString *log) {
 #pragma mark - CoreServicesStore validation
 
 static BOOL fdStoreOpens(NSString *path, NSError **error) {
-    void *handle = dlopen("/System/Library/PrivateFrameworks/CoreServicesStore.framework/CoreServicesStore", RTLD_LAZY | RTLD_LOCAL);
-    id (*openStore)(NSURL *, NSError **) = handle ? dlsym(handle, "_CSStoreCreateWithURL") : NULL;
+    static id (*openStore)(NSURL *, NSError **);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *handle = dlopen("/System/Library/PrivateFrameworks/CoreServicesStore.framework/CoreServicesStore", RTLD_LAZY | RTLD_LOCAL);
+        if (handle) openStore = dlsym(handle, "_CSStoreCreateWithURL");
+    });
     if (!openStore) return NO;
     id store = openStore([NSURL fileURLWithPath:path], error);
     return store != nil;
@@ -212,7 +216,9 @@ static NSData *readAll(int fd, NSUInteger maximum) {
     char buffer[65536];
     off_t offset = 0;
     ssize_t count;
-    while ((count = pread(fd, buffer, sizeof(buffer), offset)) > 0) {
+    for (;;) {
+        do { count = pread(fd, buffer, sizeof(buffer), offset); } while (count < 0 && errno == EINTR);
+        if (count <= 0) break;
         [data appendBytes:buffer length:(NSUInteger)count];
         offset += count;
         if ((uint64_t)offset > maximum) return nil;
@@ -390,8 +396,18 @@ static NSArray<NSString *> *mappedStoreDirectories(NSMutableString *log) {
     return self;
 }
 
-- (NSString *)storePath { return _storePath; }
-- (NSString *)lastLog { return [_log copy]; }
+- (NSString *)storePath {
+    [_lock lock];
+    NSString *path = _storePath;
+    [_lock unlock];
+    return path;
+}
+- (NSString *)lastLog {
+    [_lock lock];
+    NSString *log = [_log copy];
+    [_lock unlock];
+    return log;
+}
 
 + (NSString *)deviceModel {
     char model[64] = {0};
@@ -515,14 +531,24 @@ static NSArray<NSString *> *mappedStoreDirectories(NSMutableString *log) {
 }
 
 - (NSData *)readStore:(FDAccess *)access stat:(struct stat *)st error:(NSError **)error {
-    int fd = openat(access.dir, access.storeName.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    const char *name = access.storeName.fileSystemRepresentation;
+    int fd = openat(access.dir, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
         if (error) *error = fdError([NSString stringWithFormat:NSLocalizedString(@"Could not read the cache (errno %d).", nil), errno]);
         return nil;
     }
     NSData *data = nil;
     if (!fstat(fd, st) && S_ISREG(st->st_mode)) data = readAll(fd, kMaxStore);
+    struct stat after;
+    BOOL changed = data && (fstat(fd, &after) != 0 || after.st_size != st->st_size || after.st_size != (off_t)data.length ||
+        after.st_mtimespec.tv_sec != st->st_mtimespec.tv_sec || after.st_mtimespec.tv_nsec != st->st_mtimespec.tv_nsec ||
+        after.st_ctimespec.tv_sec != st->st_ctimespec.tv_sec || after.st_ctimespec.tv_nsec != st->st_ctimespec.tv_nsec ||
+        !fdStoreIsCurrent(access.dir, name, &after));
     close(fd);
+    if (changed) {
+        if (error) *error = fdError(NSLocalizedString(@"The cache changed while it was being read. Reload and try again.", nil));
+        return nil;
+    }
     if (data.length < 0x64 && error) *error = fdError(NSLocalizedString(@"The cache is empty or too large.", nil));
     return data.length >= 0x64 ? data : nil;
 }
@@ -539,7 +565,10 @@ static NSArray<NSString *> *mappedStoreDirectories(NSMutableString *log) {
         BOOL valid = store && fdStoreOpens(access.storePath, NULL);
         [access close];
         if (!store) return nil;
-        if (!valid) [_log appendString:@"Warning: CoreServicesStore did not open the live file.\n"];
+        if (!valid) {
+            if (error) *error = fdError(NSLocalizedString(@"The current cache failed the CoreServicesStore check. Nothing written.", nil));
+            return nil;
+        }
         NSArray *apps = parseApps(store, _log);
         if (!apps || apps.count < 3) {
             if (error) *error = fdError(NSLocalizedString(@"The cache format does not match a verified layout. Nothing was changed.", nil));
@@ -557,7 +586,14 @@ static BOOL validTriple(NSArray *v) {
     return [v[0] integerValue] >= 1;
 }
 
-- (NSString *)applyVersions:(NSDictionary<NSString *, NSArray<NSNumber *> *> *)versions dryRun:(BOOL)dryRun error:(NSError **)error {
+static NSArray<NSNumber *> *recordSDK(FDAppRecord *app) {
+    return @[@(app.sdkMajor), @(app.sdkMinor), @(app.sdkPatch)];
+}
+
+- (NSString *)applyVersions:(NSDictionary<NSString *, NSArray<NSNumber *> *> *)versions
+               expectedSDKs:(NSDictionary<NSString *, NSArray<NSNumber *> *> *)expectedSDKs
+         expectedContainers:(NSDictionary<NSString *, NSString *> *)expectedContainers
+                     dryRun:(BOOL)dryRun error:(NSError **)error {
     [_lock lock];
     FDAccess *access = nil;
     int fd = -1;
@@ -581,20 +617,32 @@ static BOOL validTriple(NSArray *v) {
         // Build candidate in memory: only the 24-byte SDK triple of selected records.
         NSMutableData *candidate = [original mutableCopy];
         NSMutableArray<FDAppRecord *> *changed = [NSMutableArray array];
+        NSUInteger matched = 0;
         NSMutableString *summary = [NSMutableString string];
         for (FDAppRecord *app in apps) {
             NSArray *target = versions[app.bundleID];
             if (!target) continue;
+            ++matched;
             if (!validTriple(target)) {
                 if (error) *error = fdError([NSString stringWithFormat:NSLocalizedString(@"Invalid version for %@.", nil), app.bundleID]);
                 return nil;
             }
+            NSArray *current = recordSDK(app);
+            if (!dryRun && (![current isEqualToArray:expectedSDKs[app.bundleID]] ||
+                            ![app.containerUUID isEqualToString:expectedContainers[app.bundleID]])) {
+                if (error) *error = fdError([NSString stringWithFormat:NSLocalizedString(@"%@ changed since the list was loaded. Reload before applying. Nothing written.", nil), app.bundleID]);
+                return nil;
+            }
             uint64_t sdk[3] = {[target[0] unsignedLongLongValue], [target[1] unsignedLongLongValue], [target[2] unsignedLongLongValue]};
-            if ((NSInteger)sdk[0] == app.sdkMajor && (NSInteger)sdk[1] == app.sdkMinor && (NSInteger)sdk[2] == app.sdkPatch) continue;
+            if ([current isEqualToArray:target]) continue;
             memcpy((uint8_t *)candidate.mutableBytes + app.sdkOffset, sdk, sizeof(sdk));
             [changed addObject:app];
             [summary appendFormat:@"• %@: %ld.%ld.%ld → %llu.%llu.%llu\n", app.name,
                 (long)app.sdkMajor, (long)app.sdkMinor, (long)app.sdkPatch, sdk[0], sdk[1], sdk[2]];
+        }
+        if (matched != versions.count) {
+            if (error) *error = fdError(NSLocalizedString(@"An app is no longer installed. Reload before applying. Nothing written.", nil));
+            return nil;
         }
         if (!changed.count) return NSLocalizedString(@"There are no changes to write.", nil);
 
@@ -631,7 +679,12 @@ static BOOL validTriple(NSArray *v) {
         }
         NSMutableString *scratch = [NSMutableString string];
         NSArray<FDAppRecord *> *reparsed = parseApps(candidate, scratch);
-        if (reparsed.count != apps.count) {
+        NSUInteger reproduced = 0;
+        for (FDAppRecord *app in reparsed) {
+            NSArray *target = versions[app.bundleID];
+            if (target && [recordSDK(app) isEqualToArray:target]) ++reproduced;
+        }
+        if (reparsed.count != apps.count || reproduced != versions.count) {
             if (error) *error = fdError(NSLocalizedString(@"The draft did not parse back correctly. Nothing written.", nil));
             return nil;
         }
@@ -719,13 +772,18 @@ static BOOL validTriple(NSArray *v) {
 }
 
 
-- (NSArray<NSNumber *> *)recoverSDKForBundleID:(NSString *)bundleID error:(NSError **)error {
+- (NSArray<NSNumber *> *)recoverSDKForBundleID:(NSString *)bundleID
+                            expectedContainer:(NSString *)container error:(NSError **)error {
     NSArray<FDAppRecord *> *apps = [self loadApps:error];
     if (!apps) return nil;
     FDAppRecord *record = nil;
     for (FDAppRecord *app in apps) if ([app.bundleID isEqualToString:bundleID]) { record = app; break; }
     if (!record || ![record.bundleName isEqualToString:record.bundleName.lastPathComponent]) {
         if (error) *error = fdError(NSLocalizedString(@"Installed app not found. Reload and try again.", nil));
+        return nil;
+    }
+    if (![record.containerUUID isEqualToString:container]) {
+        if (error) *error = fdError([NSString stringWithFormat:NSLocalizedString(@"%@ changed since the list was loaded. Reload before applying. Nothing written.", nil), bundleID]);
         return nil;
     }
     [_lock lock];

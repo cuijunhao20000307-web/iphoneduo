@@ -89,6 +89,9 @@ final class AppCatalog {
     private(set) var forced: Set<String>
     /// Original SDK of each app before we touched it.
     private(set) var originals: [String: SDKVersion]
+    private var originalContainers: [String: String]
+    /// Overrides that may have reached the live cache before verification completed.
+    private var unverifiedOverrides: [String: SDKVersion]
     /// The version last written by this app; old installs default to 27.1.
     private(set) var appliedTargets: [String: SDKVersion]
     /// Per-app version selected for the next write.
@@ -109,6 +112,9 @@ final class AppCatalog {
         } else {
             originals = [:]
         }
+        originalContainers = defaults.dictionary(forKey: "originalContainers") as? [String: String] ?? [:]
+        unverifiedOverrides = (defaults.data(forKey: "unverifiedOverrides")
+            .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
         appliedTargets = (defaults.data(forKey: "appliedTargets")
             .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
         trialTargets = (defaults.data(forKey: "trialTargets")
@@ -165,7 +171,8 @@ final class AppCatalog {
             if selection.contains(app.id) && !compatibilityProtected.contains(app.id) && app.id != Bundle.main.bundleIdentifier {
                 let desired = desiredSDK(for: app)
                 if app.sdk != desired && canToggle(app) { changes[app.id] = desired }
-            } else if let original = originals[app.id], app.sdk != original {
+            } else if let original = originals[app.id], app.sdk != original,
+                      originalContainers[app.id] == nil || originalContainers[app.id] == app.container {
                 changes[app.id] = original
             }
         }
@@ -223,17 +230,23 @@ final class AppCatalog {
         resultMessage = nil
         defer { loading = false }
         let id = app.id
-        let result: Result<([NSNumber], [InstalledApp]), Error> = await Task.detached {
+        let container = app.container
+        let (result, recoveryLog): (Result<([NSNumber], [InstalledApp]), Error>, String) = await Task.detached {
+            let engine = FDEngine.shared
+            let triple: [NSNumber]
             do {
-                let triple = try FDEngine.shared.recoverSDK(forBundleID: id)
-                let list = try FDEngine.shared.loadApps()
+                triple = try engine.recoverSDK(forBundleID: id, expectedContainer: container)
+            } catch { return (.failure(error), engine.lastLog) }
+            let log = engine.lastLog
+            do {
+                let list = try engine.loadApps()
                     .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
                     .map(InstalledApp.init)
-                return .success((triple, list))
+                return (.success((triple, list)), log)
             }
-            catch { return .failure(error) }
+            catch { return (.failure(error), engine.lastLog) }
         }.value
-        engineLog = FDEngine.shared.lastLog
+        engineLog = recoveryLog
         switch result {
         case .success(let (triple, list)):
             guard triple.count == 3, triple.allSatisfy({ (0...99).contains($0.intValue) }),
@@ -241,12 +254,18 @@ final class AppCatalog {
                 errorMessage = String(localized: "Executable SDK is missing or ambiguous. No SDK was changed.")
                 return
             }
-            guard list.contains(where: { $0.id == id }) else {
+            guard let installed = list.first(where: { $0.id == id }) else {
                 errorMessage = String(localized: "Installed app not found. Reload and try again.")
+                return
+            }
+            guard installed.container == container else {
+                errorMessage = String(localized: "The app was updated during recovery. Reload and try again.")
                 return
             }
             apps = list
             originals[id] = SDKVersion(major: triple[0].intValue, minor: triple[1].intValue, patch: triple[2].intValue)
+            originalContainers[id] = container
+            unverifiedOverrides[id] = nil
             selection.remove(id)
             compatibilityProtected.insert(id)
             trialTargets[id] = nil
@@ -292,17 +311,19 @@ final class AppCatalog {
         loading = true
         errorMessage = nil
         defer { loading = false }
-        let result: Result<[InstalledApp], Error> = await Task.detached {
+        let (result, log, path): (Result<[InstalledApp], Error>, String, String?) = await Task.detached {
+            let engine = FDEngine.shared
             do {
-                return .success(try FDEngine.shared.loadApps()
+                let list = try engine.loadApps()
                     .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
-                    .map(InstalledApp.init))
+                    .map(InstalledApp.init)
+                return (.success(list), engine.lastLog, engine.storePath)
             } catch {
-                return .failure(error)
+                return (.failure(error), engine.lastLog, engine.storePath)
             }
         }.value
-        engineLog = FDEngine.shared.lastLog
-        storePath = FDEngine.shared.storePath
+        engineLog = log
+        storePath = path
         switch result {
         case .success(let list):
             apps = list
@@ -314,24 +335,47 @@ final class AppCatalog {
         }
     }
 
-    /// Drop bookkeeping for apps that vanished, and adopt new originals after updates.
+    /// Reconcile against the current installation before offering any further writes.
     private func reconcile() {
         let byID = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
-        for (id, _) in originals where byID[id] == nil { originals[id] = nil }
-        forced = forced.filter { byID[$0] != nil }
-        appliedTargets = appliedTargets.filter { byID[$0.key] != nil }
+        let tracked = forced.union(originals.keys).union(unverifiedOverrides.keys)
+        for id in tracked {
+            guard let app = byID[id] else {
+                clearTracking(for: id)
+                continue
+            }
+            let forcedVersion = appliedTargets[id] ?? .target
+            let replaced = originalContainers[id].map { $0 != app.container } ?? false
+            if replaced {
+                clearTracking(for: id)
+                selection.remove(id)
+                continue
+            }
+            let attempted = unverifiedOverrides.removeValue(forKey: id)
+            if let attempted, app.sdk == attempted {
+                // The write reached the cache before the app could verify it.
+                forced.insert(id)
+                appliedTargets[id] = attempted
+                if !compatibilityProtected.contains(id) { selection.insert(id) }
+            } else if (forced.contains(id) || attempted != nil),
+                      app.sdk != forcedVersion, app.sdk != originals[id] {
+                // The cache now contains an SDK that this installation did not write.
+                // Discard the old restore point rather than replacing the current SDK.
+                clearTracking(for: id)
+                selection.remove(id)
+                continue
+            }
+            if originals[id] != nil && originalContainers[id] == nil {
+                // Earlier versions did not save the installation identifier.
+                originalContainers[id] = app.container
+            }
+        }
         trialTargets = trialTargets.filter { byID[$0.key] != nil }
         // A previous write may have succeeded before the process was killed or its
         // readback failed. A fresh read is enough to finish an already-restored app.
         for id in compatibilityProtected {
             if let app = byID[id], let original = originals[id], app.sdk == original {
                 clearTracking(for: id)
-            }
-        }
-        for id in forced {
-            if !compatibilityProtected.contains(id), let app = byID[id], app.sdk != (appliedTargets[id] ?? .target), app.sdk < .trial27 {
-                // The app was updated or rebuilt; its new recorded SDK is the restore point.
-                originals[id] = app.sdk
             }
         }
         selection = selection.filter { byID[$0] != nil }.subtracting(compatibilityProtected)
@@ -349,15 +393,28 @@ final class AppCatalog {
         resultMessage = nil
         defer { applying = false }
         // Save restore points before writing, including if the process is interrupted.
-        for app in apps where changes[app.id] != nil && requestedSelection.contains(app.id) && originals[app.id] == nil {
-            originals[app.id] = app.sdk
+        var expectedSDKs: [String: [NSNumber]] = [:]
+        var expectedContainers: [String: String] = [:]
+        for app in apps {
+            guard let version = changes[app.id] else { continue }
+            expectedSDKs[app.id] = app.sdk.triple
+            expectedContainers[app.id] = app.container
+            guard requestedSelection.contains(app.id) else { continue }
+            if originals[app.id] == nil { originals[app.id] = app.sdk }
+            originalContainers[app.id] = app.container
+            unverifiedOverrides[app.id] = version
         }
         persist()
         let payload = changes.mapValues { $0.triple }
+        let observedSDKs = expectedSDKs
+        let observedContainers = expectedContainers
         let (result, writeLog): (Result<(String, [InstalledApp]), Error>, String) = await Task.detached {
             let engine = FDEngine.shared
             let summary: String
-            do { summary = try engine.applyVersions(payload, dryRun: false) }
+            do {
+                summary = try engine.applyVersions(payload, expectedSDKs: observedSDKs,
+                                                   expectedContainers: observedContainers, dryRun: false)
+            }
             catch { return (.failure(error), engine.lastLog) }
             let log = engine.lastLog
             do {
@@ -374,13 +431,15 @@ final class AppCatalog {
             let byID = Dictionary(uniqueKeysWithValues: verified.map { ($0.id, $0) })
             var failed: [String] = []
             for (id, version) in changes {
-                guard byID[id]?.sdk == version else {
+                guard let verifiedApp = byID[id], verifiedApp.sdk == version,
+                      verifiedApp.container == observedContainers[id] else {
                     failed.append(id)
                     continue // Keep the original and pending selection for retry.
                 }
                 if requestedSelection.contains(id) {
                     forced.insert(id)
                     appliedTargets[id] = version
+                    unverifiedOverrides[id] = nil
                 } else {
                     clearTracking(for: id)
                 }
@@ -400,6 +459,8 @@ final class AppCatalog {
 
     private func clearTracking(for id: String) {
         originals[id] = nil
+        originalContainers[id] = nil
+        unverifiedOverrides[id] = nil
         forced.remove(id)
         appliedTargets[id] = nil
         trialTargets[id] = nil
@@ -408,6 +469,8 @@ final class AppCatalog {
     private func persist() {
         defaults.set(Array(forced), forKey: "forced")
         defaults.set(try? JSONEncoder().encode(originals), forKey: "originals")
+        defaults.set(originalContainers, forKey: "originalContainers")
+        defaults.set(try? JSONEncoder().encode(unverifiedOverrides), forKey: "unverifiedOverrides")
         defaults.set(try? JSONEncoder().encode(appliedTargets), forKey: "appliedTargets")
         defaults.set(try? JSONEncoder().encode(trialTargets), forKey: "trialTargets")
         defaults.set(Array(compatibilityProtected).sorted(), forKey: "compatibilityProtected")

@@ -12,7 +12,8 @@ struct ForceDuoApp: App {
             DispatchQueue.global().async {
                 let text: String
                 do {
-                    text = try FDEngine.shared.applyVersions([id: SDKVersion.target.triple], dryRun: true)
+                    text = try FDEngine.shared.applyVersions([id: SDKVersion.target.triple],
+                                                             expectedSDKs: nil, expectedContainers: nil, dryRun: true)
                 } catch {
                     text = "FAILED: \(error.localizedDescription)"
                 }

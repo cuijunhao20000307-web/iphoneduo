@@ -21,8 +21,13 @@ class FDEngine {
     var fail = false, ignoreWrite = false, failRead = false, failRecovery = false
     var recoveredSDK: [NSNumber] = [26, 0, 0]
     var loadCount = 0
-    func recoverSDK(forBundleID id: String) throws -> [NSNumber] {
+    var replaceAfterRecovery = false
+    func recoverSDK(forBundleID id: String, expectedContainer: String) throws -> [NSNumber] {
         if failRecovery { throw NSError(domain: "test-recovery", code: 1) }
+        guard id == record.bundleID, expectedContainer == record.containerUUID else {
+            throw NSError(domain: "test-installation-changed", code: 2)
+        }
+        if replaceAfterRecovery { record.containerUUID = "updated-container" }
         return recoveredSDK
     }
     func loadApps() throws -> [FDAppRecord] {
@@ -30,9 +35,14 @@ class FDEngine {
         if failRead { throw NSError(domain: "test-read", code: 1) }
         return [record]
     }
-    func applyVersions(_ payload: [String: [NSNumber]], dryRun: Bool) throws -> String {
+    func applyVersions(_ payload: [String: [NSNumber]], expectedSDKs: [String: [NSNumber]]?,
+                       expectedContainers: [String: String]?, dryRun: Bool) throws -> String {
         Thread.sleep(forTimeInterval: 0.1)
         if fail { throw NSError(domain: "test-write", code: 1) }
+        let current = [record.sdkMajor, record.sdkMinor, record.sdkPatch].map { NSNumber(value: $0) }
+        guard expectedContainers?[record.bundleID] == record.containerUUID, expectedSDKs?[record.bundleID] == current else {
+            throw NSError(domain: "test-stale-write", code: 1)
+        }
         if !ignoreWrite, let v = payload[record.bundleID] {
             record.sdkMajor = v[0].intValue
             record.sdkMinor = v[1].intValue
@@ -53,7 +63,7 @@ extension AppCatalog {
 
 @main struct RecoveryTests {
     @MainActor static func fresh() -> AppCatalog {
-        for key in ["forced", "originals", "appliedTargets", "trialTargets", "compatibilityProtected"] {
+        for key in ["forced", "originals", "originalContainers", "unverifiedOverrides", "appliedTargets", "trialTargets", "compatibilityProtected"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         FDEngine.shared.record = FDAppRecord()
@@ -61,6 +71,7 @@ extension AppCatalog {
         FDEngine.shared.ignoreWrite = false
         FDEngine.shared.failRead = false
         FDEngine.shared.failRecovery = false
+        FDEngine.shared.replaceAfterRecovery = false
         FDEngine.shared.recoveredSDK = [26, 0, 0]
         FDEngine.shared.loadCount = 0
         IconTestState.delay = false
@@ -181,6 +192,48 @@ extension AppCatalog {
         await c.recoverOriginal(for: c.apps[0])
         assert(c.errorMessage != nil && c.resultMessage == nil && c.pendingChanges.isEmpty)
         print("PASS: unreadable or invalid compiled SDK never stages a guessed restore")
+
+        c = fresh()
+        await enable(c)
+        c.restoreOriginal(for: c.apps[0])
+        FDEngine.shared.record.containerUUID = "new-installation"
+        await c.apply()
+        assert(c.errorMessage != nil && FDEngine.shared.record.sdkMajor == 27)
+        await c.reload()
+        assert(c.pendingChanges.isEmpty && c.originals.isEmpty && c.forced.isEmpty)
+        assert(c.compatibilityProtected.contains("test.game"))
+        print("PASS: a replaced app with the same SDK cannot receive an old restore")
+
+        c = fresh()
+        await enable(c)
+        c.restoreOriginal(for: c.apps[0])
+        FDEngine.shared.record.sdkMinor = 2
+        await c.apply()
+        assert(c.errorMessage != nil && FDEngine.shared.record.sdkMinor == 2)
+        await c.reload()
+        assert(c.pendingChanges.isEmpty && c.originals.isEmpty)
+        print("PASS: a changed SDK in the same container blocks stale writes and restores")
+
+        c = fresh()
+        FDEngine.shared.replaceAfterRecovery = true
+        await c.recoverOriginal(for: c.apps[0])
+        assert(c.errorMessage != nil && c.originals.isEmpty && c.compatibilityProtected.isEmpty)
+        print("PASS: replacing the installation during executable recovery discards the recovered SDK")
+
+        c = fresh()
+        c.setTrialTarget(.trialLatest, for: c.apps[0])
+        FDEngine.shared.failRead = true
+        await c.apply()
+        assert(c.forced.isEmpty && c.errorMessage != nil && FDEngine.shared.record.sdkPatch == 1)
+        FDEngine.shared.failRead = false
+        let interrupted = AppCatalog()
+        await interrupted.reload()
+        assert(interrupted.forced.contains("test.game") && interrupted.appliedTargets["test.game"] == .trialLatest)
+        assert(interrupted.originals["test.game"]?.major == 26 && interrupted.pendingChanges.isEmpty)
+        interrupted.restoreOriginal(for: interrupted.apps[0])
+        await interrupted.apply()
+        assert(interrupted.apps[0].sdk.major == 26)
+        print("PASS: a completed non-default override is recoverable after failed readback and relaunch")
 
         c = fresh()
         IconTestState.delay = true
