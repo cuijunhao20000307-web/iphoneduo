@@ -1,0 +1,23 @@
+name: Test game recovery safeguards
+on:
+  push:
+    branches: ["fix/game-recovery-guards"]
+permissions:
+  contents: read
+jobs:
+  recovery:
+    runs-on: xcode-27
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test restore bookkeeping
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          export MACOSX_DEPLOYMENT_TARGET=14.0
+          xcrun swiftc -swift-version 5 -parse-as-library \
+            overlay/ForceDuoApp/Sources/Model.swift tests/RecoveryHarness.swift \
+            -o "$RUNNER_TEMP/recovery-tests"
+          "$RUNNER_TEMP/recovery-tests"
+          xcrun clang -Wall -Werror tests/OriginalSDKTests.c -o "$RUNNER_TEMP/sdk-parser-tests"
+          "$RUNNER_TEMP/sdk-parser-tests"

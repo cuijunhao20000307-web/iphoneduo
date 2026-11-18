@@ -112,6 +112,13 @@ extension AppCatalog {
     }
     @MainActor static func main() async {
         var c = fresh()
+        FDEngine.shared.extraRecords = [FDAppRecord()]
+        await c.reload()
+        assert(c.errorMessage != nil && c.apps.count == 1)
+        await c.restoreAudioBaseline(for: c.apps[0])
+        assert(c.errorMessage != nil && FDEngine.shared.writeChecks == 0)
+        print("PASS: ambiguous app records stop recovery without a crash or write")
+        c = fresh()
         await enable(c)
         c.restoreOriginal(for: c.apps[0])
         await c.apply()
@@ -344,13 +351,23 @@ extension AppCatalog {
         await c.reload()
         let primaryApp = c.apps[0]
         c.setTrialTarget(.trialLatest, for: c.apps[1])
-        FDEngine.shared.failRecovery = true
+        FDEngine.shared.recoveredSDK = [25, 4, 0] // Older history recorded 26.
         await c.restoreAudioBaseline(for: primaryApp)
         assert(c.errorMessage == nil && c.resultMessage != nil)
         assert(FDEngine.shared.appliedIDs == [primaryApp.id] && other.sdkMajor == 26)
-        assert(c.apps[0].sdk.major == 26 && c.compatibilityProtected.contains(primaryApp.id))
+        assert(c.apps[0].sdk == SDKVersion(major: 25, minor: 4, patch: 0))
+        assert(c.compatibilityProtected.contains(primaryApp.id))
         assert(c.pendingChanges == [other.bundleID: .trialLatest])
-        print("PASS: sound baseline uses the saved SDK and writes only the requested app")
+        print("PASS: sound recovery uses the installed SDK even with conflicting saved history")
+
+        c = fresh()
+        await enable(c)
+        FDEngine.shared.failRecovery = true
+        let checksBefore = FDEngine.shared.writeChecks
+        await c.restoreAudioBaseline(for: c.apps[0])
+        assert(c.errorMessage != nil && FDEngine.shared.writeChecks == checksBefore)
+        assert(c.originals["test.game"]?.major == 26)
+        print("PASS: unreadable executable preserves history and blocks single-app restore")
 
         c = fresh()
         FDEngine.shared.record.sdkMajor = 27
@@ -373,7 +390,7 @@ extension AppCatalog {
         FDEngine.shared.fail = false
         let matchingChecks = FDEngine.shared.writeChecks
         await c.restoreAudioBaseline(for: c.apps[0])
-        assert(FDEngine.shared.writeChecks == matchingChecks + 1 && FDEngine.shared.appliedIDs.isEmpty)
+        assert(FDEngine.shared.writeChecks == matchingChecks && FDEngine.shared.appliedIDs.isEmpty)
         assert(c.errorMessage == nil && c.resultMessage != nil && c.originals.isEmpty)
         print("PASS: a saved baseline that already matches is checked against the live cache without writing")
 
@@ -386,8 +403,8 @@ extension AppCatalog {
         FDEngine.shared.record.sdkMinor = 1
         let staleChecks = FDEngine.shared.writeChecks
         await c.restoreAudioBaseline(for: c.apps[0])
-        assert(FDEngine.shared.writeChecks == staleChecks + 1 && FDEngine.shared.appliedIDs.isEmpty)
-        assert(c.errorMessage != nil && c.resultMessage == nil && c.originals["test.game"]?.major == 26)
+        assert(FDEngine.shared.writeChecks == staleChecks + 1 && FDEngine.shared.appliedIDs == ["test.game"])
+        assert(c.errorMessage == nil && c.resultMessage != nil && c.originals.isEmpty && c.apps[0].sdk.major == 26)
         print("PASS: a stale list cannot falsely report a saved baseline already restored")
 
         c = fresh()
@@ -400,6 +417,13 @@ extension AppCatalog {
         let protectedApp = c.apps[0]
         assert(c.compatibilityProtected.contains(protectedApp.id))
         c.setTrialTarget(.trialLatest, for: c.apps[1])
+        let protectedChecks = FDEngine.shared.writeChecks
+        assert(!c.canTestConservativeSDK(for: protectedApp))
+        await c.testConservativeSDK(for: protectedApp)
+        assert(c.errorMessage != nil && FDEngine.shared.writeChecks == protectedChecks)
+        assert(c.compatibilityProtected.contains(protectedApp.id))
+        print("PASS: a protected game cannot be overridden by the single-app trial")
+        c.removeCompatibilityProtection(for: protectedApp)
         await c.testConservativeSDK(for: protectedApp)
         assert(c.errorMessage == nil && c.resultMessage != nil)
         assert(c.apps[0].sdk == .trial27 && c.originals[protectedApp.id]?.major == 26)

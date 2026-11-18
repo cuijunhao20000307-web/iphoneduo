@@ -314,7 +314,7 @@ struct AppRow: View {
                 }
             }
         } message: {
-            Text("Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing.")
+            Text("SDK 27.0 may leave the game at its original size. Restoring the original SDK removes forced enlargement for this game.")
             if catalog.hasPendingRestore(for: app) {
                 Text("Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it.")
             }
@@ -455,7 +455,7 @@ struct CompatibilityHelpView: View {
                     Text("For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code.")
                     Text("Force Duo changes an app\'s recorded SDK version. It cannot change the game\'s display or audio code. Some games may show a black screen or lose sound after unfolding the device or opening Control Center.")
                     Text("To recover: find the affected game, turn it off or swipe left and choose Restore original SDK, tap Apply, then restart the iPhone Duo.")
-                    Text("Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code.")
+                    Text("SDK settings affect the game layout. Audio recovery while force-enlarged has not been verified.")
                 }
             }
             .navigationTitle("Game compatibility")

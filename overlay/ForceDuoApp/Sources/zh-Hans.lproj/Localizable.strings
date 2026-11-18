@@ -74,7 +74,7 @@
 "Test SDK 27.2.1" = "测试 SDK 27.2.1";
 "Audio compatibility SDK" = "音频兼容 SDK";
 "Turn on an app to force SDK 27.1. Use the waveform control for an audio compatibility test; turn off to restore the original SDK." = "开启应用默认强制 SDK 27.1；点波形按钮测试音频兼容版本；关闭开关可恢复原始 SDK。";
-"Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code." = "音频测试：选择一个游戏，点击波形图标试用 SDK 27.0 或 27.2.1。每次只修改一个游戏，应用后重启再测试。SDK 27.0 可能无法铺满内屏；这些设置不会修改游戏的音频代码。";
+"SDK settings affect the game layout. Audio recovery while force-enlarged has not been verified." = "SDK 设置会影响游戏布局。强制放大时的声音恢复仍待验证。";
 
 "Share SDK diagnostics" = "分享 SDK 诊断";
 "SDK verification failed. Restore points were kept. Reload and try again." = "SDK 核对未通过，已保留原始记录。请刷新后重试。";
@@ -105,5 +105,7 @@
 "The app record changed. Refresh and try the single-app restore again." = "应用记录发生变化。请刷新列表后重新尝试单独恢复。";
 "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately." = "请重启 iPhone Duo，再分别测试游戏切到内屏，以及下拉并收起通知中心后的声音。";
 "Test SDK 27.0 for this app only" = "仅对此应用试用 SDK 27.0";
-"Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing." = "可试用 SDK 27.0，测试保留状态栏区域的内屏布局。也可恢复原始 SDK。每次只改当前应用，请重启手机后再试。";
+"SDK 27.0 may leave the game at its original size. Restoring the original SDK removes forced enlargement for this game." = "SDK 27.0 可能让游戏保持原尺寸。恢复原始 SDK 会取消这款游戏的强制放大。";
 "This app is not eligible for the SDK 27.0 test. Refresh the app list and check its original SDK." = "此应用无法试用 SDK 27.0。请刷新列表并确认原始 SDK。";
+
+"Duplicate app records found. Refresh the list before continuing." = "发现重复的应用记录。请刷新列表后再继续。";

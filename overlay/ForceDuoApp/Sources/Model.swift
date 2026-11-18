@@ -261,9 +261,7 @@ final class AppCatalog {
             } catch { return (.failure(error), engine.lastLog) }
             let log = engine.lastLog
             do {
-                let list = try engine.loadApps()
-                    .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
-                    .map(InstalledApp.init)
+                let list = try Self.readCatalog(engine)
                 return (.success((triple, list)), log)
             }
             catch { return (.failure(error), engine.lastLog) }
@@ -313,17 +311,15 @@ final class AppCatalog {
             errorMessage = String(localized: "Installed app not found. Reload and try again.")
             return
         }
-        if originals[current.id] != nil, originalContainers[current.id] == current.container {
-            restoreOriginal(for: current)
-        } else {
-            await recoverOriginal(for: current, announcePending: false)
-            guard errorMessage == nil, resultMessage == nil else { return }
-        }
+        // Older versions may have saved an already-overridden SDK as the original.
+        await recoverOriginal(for: current, announcePending: false)
+        guard errorMessage == nil, resultMessage == nil else { return }
         await apply(.restore(current))
     }
 
     func canTestConservativeSDK(for app: InstalledApp) -> Bool {
-        guard app.id != Bundle.main.bundleIdentifier else { return false }
+        guard app.id != Bundle.main.bundleIdentifier, !compatibilityProtected.contains(app.id),
+              !restoreRequests.contains(app.id) else { return false }
         if originals[app.id] != nil, originalContainers[app.id] != app.container { return false }
         let original = originals[app.id] ?? app.sdk
         return original.major > 0 && original < .trial27
@@ -346,6 +342,18 @@ final class AppCatalog {
         Pending SDK: \(pendingChange(for: app)?.description ?? "none")
         Compatibility protection: \(compatibilityProtected.contains(app.id))
         """
+    }
+
+    private nonisolated static func readCatalog(_ engine: FDEngine) throws -> [InstalledApp] {
+        let apps = try engine.loadApps()
+            .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
+            .map(InstalledApp.init)
+        guard Set(apps.map(\.id)).count == apps.count else {
+            throw NSError(domain: "ForceDuo.Catalog", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: String(localized: "Duplicate app records found. Refresh the list before continuing.")
+            ])
+        }
+        return apps
     }
 
     func loadIfNeeded() async {
@@ -394,9 +402,7 @@ final class AppCatalog {
         let (result, log, path): (Result<[InstalledApp], Error>, String, String?) = await Task.detached {
             let engine = FDEngine.shared
             do {
-                let list = try engine.loadApps()
-                    .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
-                    .map(InstalledApp.init)
+                let list = try Self.readCatalog(engine)
                 return (.success(list), engine.lastLog, engine.storePath)
             } catch {
                 return (.failure(error), engine.lastLog, engine.storePath)
@@ -547,9 +553,7 @@ final class AppCatalog {
             catch { return (.failure(error), engine.lastLog) }
             let log = engine.lastLog
             do {
-                let verified = try engine.loadApps()
-                    .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
-                    .map(InstalledApp.init)
+                let verified = try Self.readCatalog(engine)
                 return (.success((summary, verified)), log)
             } catch { return (.failure(error), log) }
         }.value

@@ -74,7 +74,7 @@
 "Test SDK 27.2.1" = "Test SDK 27.2.1";
 "Audio compatibility SDK" = "Audio compatibility SDK";
 "Turn on an app to force SDK 27.1. Use the waveform control for an audio compatibility test; turn off to restore the original SDK." = "Turn on an app to force SDK 27.1. Use the waveform control for an audio compatibility test; turn off to restore the original SDK.";
-"Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code." = "Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code.";
+"SDK settings affect the game layout. Audio recovery while force-enlarged has not been verified." = "SDK settings affect the game layout. Audio recovery while force-enlarged has not been verified.";
 
 "Share SDK diagnostics" = "Share SDK diagnostics";
 "SDK verification failed. Restore points were kept. Reload and try again." = "SDK verification failed. Restore points were kept. Reload and try again.";
@@ -105,5 +105,7 @@
 "The app record changed. Refresh and try the single-app restore again." = "The app record changed. Refresh and try the single-app restore again.";
 "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately." = "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately.";
 "Test SDK 27.0 for this app only" = "Test SDK 27.0 for this app only";
-"Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing." = "Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing.";
+"SDK 27.0 may leave the game at its original size. Restoring the original SDK removes forced enlargement for this game." = "SDK 27.0 may leave the game at its original size. Restoring the original SDK removes forced enlargement for this game.";
 "This app is not eligible for the SDK 27.0 test. Refresh the app list and check its original SDK." = "This app is not eligible for the SDK 27.0 test. Refresh the app list and check its original SDK.";
+
+"Duplicate app records found. Refresh the list before continuing." = "Duplicate app records found. Refresh the list before continuing.";
