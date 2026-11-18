@@ -18,9 +18,18 @@ class FDEngine {
     static let shared = FDEngine()
     var lastLog = "", storePath: String? = nil
     var record = FDAppRecord()
-    var fail = false, ignoreWrite = false
-    func recoverSDK(forBundleID id: String) throws -> [NSNumber] { [26, 0, 0] }
-    func loadApps() throws -> [FDAppRecord] { [record] }
+    var fail = false, ignoreWrite = false, failRead = false, failRecovery = false
+    var recoveredSDK: [NSNumber] = [26, 0, 0]
+    var loadCount = 0
+    func recoverSDK(forBundleID id: String) throws -> [NSNumber] {
+        if failRecovery { throw NSError(domain: "test-recovery", code: 1) }
+        return recoveredSDK
+    }
+    func loadApps() throws -> [FDAppRecord] {
+        loadCount += 1
+        if failRead { throw NSError(domain: "test-read", code: 1) }
+        return [record]
+    }
     func applyVersions(_ payload: [String: [NSNumber]], dryRun: Bool) throws -> String {
         Thread.sleep(forTimeInterval: 0.1)
         if fail { throw NSError(domain: "test-write", code: 1) }
@@ -32,16 +41,30 @@ class FDEngine {
         return "written"
     }
 }
-extension AppCatalog { func loadIcons() async {} }
+@MainActor enum IconTestState { static var delay = false, started = false }
+extension AppCatalog {
+    func loadIcons() async {
+        IconTestState.started = true
+        while IconTestState.delay && !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+}
 
 @main struct RecoveryTests {
     @MainActor static func fresh() -> AppCatalog {
-        for key in ["forced", "originals", "appliedTargets", "trialTargets"] {
+        for key in ["forced", "originals", "appliedTargets", "trialTargets", "compatibilityProtected"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         FDEngine.shared.record = FDAppRecord()
         FDEngine.shared.fail = false
         FDEngine.shared.ignoreWrite = false
+        FDEngine.shared.failRead = false
+        FDEngine.shared.failRecovery = false
+        FDEngine.shared.recoveredSDK = [26, 0, 0]
+        FDEngine.shared.loadCount = 0
+        IconTestState.delay = false
+        IconTestState.started = false
         let c = AppCatalog()
         c.apps = [InstalledApp(FDEngine.shared.record)]
         return c
@@ -110,5 +133,66 @@ extension AppCatalog { func loadIcons() async {} }
         await c.apply()
         assert(c.apps[0].sdk.major == 26)
         print("PASS: reinstall with no history can restore recovered SDK")
+
+        c = fresh()
+        await enable(c)
+        c.restoreOriginal(for: c.apps[0])
+        await c.apply()
+        c.selectAllLegacy()
+        c.binding(for: c.apps[0]).wrappedValue = true
+        c.setTrialTarget(.trialLatest, for: c.apps[0])
+        assert(c.selection.isEmpty && c.pendingChanges.isEmpty)
+        let protected = AppCatalog()
+        await protected.reload()
+        protected.selectAllLegacy()
+        assert(protected.selection.isEmpty && protected.compatibilityProtected.contains("test.game"))
+        assert(protected.apps(for: .compatibility, search: "").count == 1)
+        protected.removeCompatibilityProtection(for: protected.apps[0])
+        assert(protected.pendingChanges.isEmpty)
+        protected.binding(for: protected.apps[0]).wrappedValue = true
+        assert(protected.pendingChanges["test.game"] == .target)
+        print("PASS: protection survives relaunch and all enabling paths; explicit removal permits selection")
+
+        c = fresh()
+        await c.recoverOriginal(for: c.apps[0])
+        assert(c.originals.isEmpty && c.forced.isEmpty && c.pendingChanges.isEmpty)
+        assert(c.compatibilityProtected.contains("test.game") && c.resultMessage != nil)
+        print("PASS: recovery of an already-original app completes without a cache write")
+
+        c = fresh()
+        await enable(c)
+        c.restoreOriginal(for: c.apps[0])
+        FDEngine.shared.failRead = true
+        await c.apply()
+        assert(c.errorMessage != nil && c.originals["test.game"]?.major == 26)
+        FDEngine.shared.failRead = false
+        let resumed = AppCatalog()
+        await resumed.reload()
+        assert(resumed.originals.isEmpty && resumed.forced.isEmpty && resumed.selection.isEmpty)
+        assert(resumed.compatibilityProtected.contains("test.game"))
+        print("PASS: completed restore with failed readback reconciles safely after relaunch")
+
+        c = fresh()
+        FDEngine.shared.failRecovery = true
+        await c.recoverOriginal(for: c.apps[0])
+        assert(c.errorMessage != nil && c.originals.isEmpty && c.compatibilityProtected.isEmpty)
+        FDEngine.shared.failRecovery = false
+        FDEngine.shared.recoveredSDK = [0, 0, 0]
+        await c.recoverOriginal(for: c.apps[0])
+        assert(c.errorMessage != nil && c.resultMessage == nil && c.pendingChanges.isEmpty)
+        print("PASS: unreadable or invalid compiled SDK never stages a guessed restore")
+
+        c = fresh()
+        IconTestState.delay = true
+        await c.loadIfNeeded()
+        while !IconTestState.started { await Task.yield() }
+        assert(!c.loading && !c.applying && !c.apps.isEmpty)
+        await c.loadIfNeeded()
+        assert(FDEngine.shared.loadCount == 1)
+        c.selection.insert("test.game")
+        await c.apply()
+        assert(!c.applying && c.apps[0].sdk == .target)
+        IconTestState.delay = false
+        print("PASS: slow icon downloads do not lock scanning or writing; scene reentry does not rescan")
     }
 }

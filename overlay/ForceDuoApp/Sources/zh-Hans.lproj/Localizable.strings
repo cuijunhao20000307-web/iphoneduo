@@ -84,3 +84,13 @@
 "Cannot read the installed app identity. No SDK was changed." = "无法读取安装文件或核对应用身份，未修改 SDK。";
 "Cannot read a supported executable header. No SDK was changed." = "无法读取受支持的程序头，未修改 SDK。";
 "Executable SDK is missing or ambiguous. No SDK was changed." = "程序内的 SDK 信息缺失或不一致，未修改 SDK。";
+
+// Compatibility recovery and protection
+"Could not save the cache backup. Nothing written." = "无法保存缓存备份，未写入系统缓存。";
+"Compatibility" = "兼容";
+"Compatibility protection" = "兼容保护";
+"Sound / black screen recovery" = "声音 / 黑屏兼容恢复";
+"Restore saved original SDK" = "恢复已保存的原始 SDK";
+"Remove compatibility protection" = "解除兼容保护";
+"The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed." = "当前 SDK 记录已经与安装程序一致，已启用兼容保护，无需写入缓存。若仍有静音或黑屏，请分享该应用的诊断信息。";
+"For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code." = "下拉通知中心、控制中心、合盖或展开后无声，或应用启动黑屏时：找回该应用的原始 SDK，点“应用”并重启手机。这会撤销该应用的强制适配，并防止“全选”再次启用。兼容恢复不会修改该应用内部的音频或画面代码。";

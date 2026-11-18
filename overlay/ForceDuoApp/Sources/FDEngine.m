@@ -9,6 +9,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <time.h>
 #include <unistd.h>
 #include <xpc/xpc.h>
 #include <objc/message.h>
@@ -223,6 +224,12 @@ static BOOL pwriteAll(int fd, const void *bytes, size_t size, off_t offset) {
     ssize_t result;
     do { result = pwrite(fd, bytes, size, offset); } while (result < 0 && errno == EINTR);
     return result == (ssize_t)size;
+}
+
+static BOOL fdStoreIsCurrent(int directory, const char *name, const struct stat *opened) {
+    struct stat current;
+    return fstatat(directory, name, &current, AT_SYMLINK_NOFOLLOW) == 0 &&
+        S_ISREG(current.st_mode) && current.st_dev == opened->st_dev && current.st_ino == opened->st_ino;
 }
 
 static BOOL isActiveStoreName(NSString *name) {
@@ -645,22 +652,32 @@ static BOOL validTriple(NSArray *v) {
         NSString *backups = documentsPath(@"Backups");
         NSDateFormatter *formatter = [NSDateFormatter new];
         formatter.dateFormat = @"yyyyMMdd-HHmmss";
-        NSString *backupName = [NSString stringWithFormat:@"%@-%@", [formatter stringFromDate:NSDate.date], access.storeName];
-        [original writeToFile:[backups stringByAppendingPathComponent:backupName] atomically:YES];
+        NSString *backupName = [NSString stringWithFormat:@"%@-%@-%@", [formatter stringFromDate:NSDate.date], NSUUID.UUID.UUIDString, access.storeName];
+        if (![original writeToFile:[backups stringByAppendingPathComponent:backupName] atomically:YES]) {
+            if (error) *error = fdError(NSLocalizedString(@"Could not save the cache backup. Nothing written.", nil));
+            return nil;
+        }
         NSArray *old = [[[NSFileManager.defaultManager contentsOfDirectoryAtPath:backups error:nil]
             sortedArrayUsingSelector:@selector(compare:)] mutableCopy];
         for (NSUInteger i = 0; i + 5 < old.count; ++i)
             [NSFileManager.defaultManager removeItemAtPath:[backups stringByAppendingPathComponent:old[i]] error:nil];
 
         // Write the live store in place.
-        fd = openat(access.dir, access.storeName.fileSystemRepresentation, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+        const char *storeName = access.storeName.fileSystemRepresentation;
+        fd = openat(access.dir, storeName, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
         if (fd < 0) {
             if (error) *error = fdError([NSString stringWithFormat:NSLocalizedString(@"iOS did not allow opening the cache for writing (errno %d).", nil), errno]);
             return nil;
         }
         struct stat live;
-        if (flock(fd, LOCK_EX | LOCK_NB) != 0 || fstat(fd, &live) || live.st_ino != before.st_ino ||
-            live.st_size != (off_t)original.length || ![readAll(fd, kMaxStore) isEqualToData:original]) {
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            if (error) *error = fdError(NSLocalizedString(@"lsd just changed or locked the cache. Please try again.", nil));
+            return nil;
+        }
+        uint64_t lockStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        if (fstat(fd, &live) || live.st_dev != before.st_dev || live.st_ino != before.st_ino ||
+            live.st_size != (off_t)original.length || ![readAll(fd, kMaxStore) isEqualToData:original] ||
+            !fdStoreIsCurrent(access.dir, storeName, &live)) {
             if (error) *error = fdError(NSLocalizedString(@"lsd just changed or locked the cache. Please try again.", nil));
             return nil;
         }
@@ -668,19 +685,31 @@ static BOOL validTriple(NSArray *v) {
         for (FDAppRecord *app in changed)
             wrote = wrote && pwriteAll(fd, b + app.sdkOffset, 24, (off_t)app.sdkOffset);
         wrote = wrote && pwriteAll(fd, b + 6, 2, 6) && fsync(fd) == 0;
-        NSData *after = readAll(fd, kMaxStore);
-        BOOL verified = wrote && [after isEqualToData:candidate] && fdStoreOpens(access.storePath, NULL);
+        // CoreServicesStore already accepted the candidate before we took the
+        // lock. Verify those same bytes on this descriptor without opening the
+        // live store a second time while it is exclusively locked.
+        BOOL verified = wrote && [readAll(fd, kMaxStore) isEqualToData:candidate] &&
+            fdStoreIsCurrent(access.dir, storeName, &live);
         if (!verified) {
             BOOL restored = YES;
-            for (FDAppRecord *app in changed)
-                restored = restored && pwriteAll(fd, a + app.sdkOffset, 24, (off_t)app.sdkOffset);
-            restored = restored && pwriteAll(fd, a + 6, 2, 6) && fsync(fd) == 0 &&
-                [readAll(fd, kMaxStore) isEqualToData:original];
+            for (FDAppRecord *app in changed) {
+                if (!pwriteAll(fd, a + app.sdkOffset, 24, (off_t)app.sdkOffset)) restored = NO;
+            }
+            if (!pwriteAll(fd, a + 6, 2, 6)) restored = NO;
+            if (fsync(fd) != 0) restored = NO;
+            restored = restored && [readAll(fd, kMaxStore) isEqualToData:original];
+            close(fd);
+            fd = -1;
+            [_log appendFormat:@"Write verification failed; rollback %@. Cache lock %.1f ms.\n", restored ? @"verified" : @"incomplete",
+                (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - lockStart) / 1.0e6];
             if (error) *error = fdError(restored ? NSLocalizedString(@"The write could not be verified; the original bytes were restored.", nil) :
                 NSLocalizedString(@"The write failed and could not be restored. A backup is in Documents/Backups.", nil));
             return nil;
         }
-        [_log appendFormat:@"Applied %lu records, inode %llu.\n", (unsigned long)changed.count, (unsigned long long)live.st_ino];
+        close(fd);
+        fd = -1;
+        [_log appendFormat:@"Applied %lu records, inode %llu. Cache lock %.1f ms.\n", (unsigned long)changed.count,
+            (unsigned long long)live.st_ino, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - lockStart) / 1.0e6];
         return [NSString stringWithFormat:NSLocalizedString(@"Wrote and verified %lu app(s):\n%@", nil), (unsigned long)changed.count, summary];
     } @finally {
         if (fd >= 0) close(fd);

@@ -47,7 +47,7 @@ struct ForceDuoApp: App {
                 .environment(catalog)
                 .task {
                     let debugRun = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("--fd-dryrun=") || $0 == "--fd-dump" || $0.hasPrefix("--fd-probe=") }
-                    if !debugRun { await catalog.reload() }
+                    if !debugRun { await catalog.loadIfNeeded() }
                 }
         }
     }
@@ -56,7 +56,7 @@ struct ForceDuoApp: App {
 struct RootView: View {
     @Environment(AppCatalog.self) private var catalog
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @State private var filter: AppFilter? = .legacy
+    @State private var filter: AppFilter? = .all
     @State private var column: NavigationSplitViewColumn = .detail
     @State private var visibility: NavigationSplitViewVisibility = .automatic
 
@@ -219,6 +219,7 @@ struct AppListView: View {
                     Button("Deselect all", systemImage: "xmark.circle") { catalog.deselectAll() }
                     Divider()
                     Button("Reload", systemImage: "arrow.clockwise") { Task { await catalog.reload() } }
+                        .disabled(catalog.loading || catalog.applying)
                     Button("Export diagnostics", systemImage: "stethoscope") {
                         Task.detached { _ = try? FDEngine.shared.exportDiagnostics() }
                     }
@@ -242,6 +243,7 @@ struct AppListView: View {
 struct AppRow: View {
     @Environment(AppCatalog.self) private var catalog
     let app: InstalledApp
+    @State private var showRecovery = false
 
     var body: some View {
         let status = catalog.status(of: app)
@@ -254,6 +256,9 @@ struct AppRow: View {
                 HStack(spacing: 6) {
                     Tag(text: Text(verbatim: "SDK \(app.sdk)"), tint: .secondary)
                     Tag(text: Text(status.label), tint: status.tint)
+                    if catalog.compatibilityProtected.contains(app.id) {
+                        Tag(text: Text("Compatibility protection"), tint: .orange)
+                    }
                     if !app.storeSigned { Tag(text: Text("Sideload"), tint: .purple) }
                     if wanted && app.sdk != catalog.desiredSDK(for: app) {
                         Tag(text: Text(verbatim: "→ \(catalog.desiredSDK(for: app))"), tint: .green)
@@ -262,6 +267,13 @@ struct AppRow: View {
                 }
             }
             Spacer(minLength: 8)
+            Button {
+                showRecovery = true
+            } label: {
+                Image(systemName: "shield.lefthalf.filled")
+                    .accessibilityLabel("Sound / black screen recovery")
+            }
+            .buttonStyle(.borderless)
             if wanted && catalog.canToggle(app) {
                 Menu {
                     Button("SDK 27.1 (default)") { catalog.setTrialTarget(nil, for: app) }
@@ -279,6 +291,21 @@ struct AppRow: View {
         }
         .padding(.vertical, 2)
         .disabled(catalog.applying || catalog.loading)
+        .confirmationDialog("Sound / black screen recovery", isPresented: $showRecovery, titleVisibility: .visible) {
+            Button("Recover SDK from installed app") {
+                Task { await catalog.recoverOriginal(for: app) }
+            }
+            if catalog.originals[app.id] != nil {
+                Button("Restore saved original SDK") { catalog.restoreOriginal(for: app) }
+            }
+            if catalog.compatibilityProtected.contains(app.id) {
+                Button("Remove compatibility protection", role: .destructive) {
+                    catalog.removeCompatibilityProtection(for: app)
+                }
+            }
+        } message: {
+            Text("For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code.")
+        }
         .contextMenu {
             Button("Recover SDK from installed app", systemImage: "arrow.counterclockwise") {
                 Task { await catalog.recoverOriginal(for: app) }
@@ -286,6 +313,11 @@ struct AppRow: View {
             if catalog.originals[app.id] != nil {
                 Button("Restore original SDK", systemImage: "arrow.uturn.backward") {
                     catalog.restoreOriginal(for: app)
+                }
+            }
+            if catalog.compatibilityProtected.contains(app.id) {
+                Button("Remove compatibility protection", systemImage: "shield.slash") {
+                    catalog.removeCompatibilityProtection(for: app)
                 }
             }
             ShareLink(item: catalog.diagnosticReport(for: app)) {
@@ -407,6 +439,7 @@ struct CompatibilityHelpView: View {
         NavigationStack {
             List {
                 Section("Game compatibility") {
+                    Text("For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code.")
                     Text("Force Duo changes an app\'s recorded SDK version. It cannot change the game\'s display or audio code. Some games may show a black screen or lose sound after unfolding the device or opening Control Center.")
                     Text("To recover: find the affected game, turn it off or swipe left and choose Restore original SDK, tap Apply, then restart the iPhone Duo.")
                     Text("Audio test: select a game and tap the waveform icon to try SDK 27.0 or 27.2.1. Apply one game at a time and restart before testing. SDK 27.0 may not fill the entire inner display. These targets do not change the game audio code.")

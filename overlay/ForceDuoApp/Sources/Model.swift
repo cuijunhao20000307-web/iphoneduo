@@ -33,7 +33,7 @@ struct InstalledApp: Identifiable, Hashable {
 }
 
 enum AppFilter: String, CaseIterable, Identifiable {
-    case all = "All", legacy = "Legacy SDK", forced = "Enabled", native = "Up to date"
+    case all = "All", legacy = "Legacy SDK", forced = "Enabled", native = "Up to date", compatibility = "Compatibility"
     var title: LocalizedStringKey { LocalizedStringKey(rawValue) }
     var id: String { rawValue }
     var symbol: String {
@@ -42,6 +42,7 @@ enum AppFilter: String, CaseIterable, Identifiable {
         case .legacy: "clock.arrow.circlepath"
         case .forced: "bolt.fill"
         case .native: "checkmark.seal"
+        case .compatibility: "shield.lefthalf.filled"
         }
     }
 }
@@ -92,6 +93,11 @@ final class AppCatalog {
     private(set) var appliedTargets: [String: SDKVersion]
     /// Per-app version selected for the next write.
     private(set) var trialTargets: [String: SDKVersion]
+    /// A restored app must not be forced again by bulk selection or after relaunch.
+    private(set) var compatibilityProtected: Set<String>
+
+    @ObservationIgnored private var iconTask: Task<Void, Never>?
+    private var didLoad = false
 
     private let defaults = UserDefaults.standard
 
@@ -107,7 +113,8 @@ final class AppCatalog {
             .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
         trialTargets = (defaults.data(forKey: "trialTargets")
             .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
-        selection = forced
+        compatibilityProtected = Set(defaults.stringArray(forKey: "compatibilityProtected") ?? [])
+        selection = forced.subtracting(compatibilityProtected)
     }
 
     func status(of app: InstalledApp) -> AppStatus {
@@ -118,7 +125,7 @@ final class AppCatalog {
     }
 
     func canToggle(_ app: InstalledApp) -> Bool {
-        status(of: app) != .native
+        app.id != Bundle.main.bundleIdentifier && !compatibilityProtected.contains(app.id) && status(of: app) != .native
     }
 
     func apps(for filter: AppFilter, search: String) -> [InstalledApp] {
@@ -129,6 +136,7 @@ final class AppCatalog {
             case .legacy: s == .legacy || s == .drifted
             case .forced: s == .forced || s == .drifted
             case .native: s == .native
+            case .compatibility: compatibilityProtected.contains(app.id)
             }
             guard passes else { return false }
             guard !search.isEmpty else { return true }
@@ -154,7 +162,7 @@ final class AppCatalog {
     var pendingChanges: [String: SDKVersion] {
         var changes: [String: SDKVersion] = [:]
         for app in apps {
-            if selection.contains(app.id) {
+            if selection.contains(app.id) && !compatibilityProtected.contains(app.id) && app.id != Bundle.main.bundleIdentifier {
                 let desired = desiredSDK(for: app)
                 if app.sdk != desired && canToggle(app) { changes[app.id] = desired }
             } else if let original = originals[app.id], app.sdk != original {
@@ -169,43 +177,83 @@ final class AppCatalog {
             get: { self.selection.contains(app.id) },
             set: { on in
                 guard !self.applying && !self.loading else { return }
-                if on { self.selection.insert(app.id) } else { self.selection.remove(app.id) }
+                if on {
+                    guard self.canToggle(app) else { return }
+                    self.selection.insert(app.id)
+                } else if self.originals[app.id] != nil {
+                    self.restoreOriginal(for: app)
+                } else {
+                    self.selection.remove(app.id)
+                }
             })
     }
 
     func selectAllLegacy() {
         guard !applying && !loading else { return }
-        for app in apps where status(of: app) == .legacy || status(of: app) == .drifted { selection.insert(app.id) }
+        for app in apps where canToggle(app) && (status(of: app) == .legacy || status(of: app) == .drifted) {
+            selection.insert(app.id)
+        }
     }
 
     func deselectAll() {
         guard !applying && !loading else { return }
+        for app in apps where originals[app.id] != nil { restoreOriginal(for: app) }
         selection.removeAll()
     }
 
     func restoreOriginal(for app: InstalledApp) {
         guard !applying && !loading, originals[app.id] != nil else { return }
         selection.remove(app.id)
+        compatibilityProtected.insert(app.id)
+        trialTargets[app.id] = nil
+        persist()
+    }
+
+    func removeCompatibilityProtection(for app: InstalledApp) {
+        guard !applying && !loading else { return }
+        compatibilityProtected.remove(app.id)
+        // Removing protection does not stage another SDK write.
+        persist()
     }
 
     func recoverOriginal(for app: InstalledApp) async {
         guard !applying && !loading else { return }
         loading = true
         errorMessage = nil
+        resultMessage = nil
         defer { loading = false }
         let id = app.id
-        let result: Result<[NSNumber], Error> = await Task.detached {
-            do { return .success(try FDEngine.shared.recoverSDK(forBundleID: id)) }
+        let result: Result<([NSNumber], [InstalledApp]), Error> = await Task.detached {
+            do {
+                let triple = try FDEngine.shared.recoverSDK(forBundleID: id)
+                let list = try FDEngine.shared.loadApps()
+                    .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
+                    .map(InstalledApp.init)
+                return .success((triple, list))
+            }
             catch { return .failure(error) }
         }.value
         engineLog = FDEngine.shared.lastLog
         switch result {
-        case .success(let triple):
-            guard triple.count == 3 else { return }
+        case .success(let (triple, list)):
+            guard triple.count == 3, triple.allSatisfy({ (0...99).contains($0.intValue) }),
+                  triple[0].intValue > 0 else {
+                errorMessage = String(localized: "Executable SDK is missing or ambiguous. No SDK was changed.")
+                return
+            }
+            guard list.contains(where: { $0.id == id }) else {
+                errorMessage = String(localized: "Installed app not found. Reload and try again.")
+                return
+            }
+            apps = list
             originals[id] = SDKVersion(major: triple[0].intValue, minor: triple[1].intValue, patch: triple[2].intValue)
             selection.remove(id)
-            persist()
-            resultMessage = String(localized: "Compiled SDK recovered. Tap Apply to restore it, then restart the phone.")
+            compatibilityProtected.insert(id)
+            trialTargets[id] = nil
+            reconcile()
+            resultMessage = originals[id] == nil
+                ? String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
+                : String(localized: "Compiled SDK recovered. Tap Apply to restore it, then restart the phone.")
         case .failure(let error):
             errorMessage = error.localizedDescription
         }
@@ -222,7 +270,21 @@ final class AppCatalog {
         Last applied SDK: \(appliedTargets[app.id]?.description ?? (forced.contains(app.id) ? SDKVersion.target.description : "none"))
         Selected: \(selection.contains(app.id))
         Pending SDK: \(pendingChanges[app.id]?.description ?? "none")
+        Compatibility protection: \(compatibilityProtected.contains(app.id))
         """
+    }
+
+    func loadIfNeeded() async {
+        guard !didLoad else { return }
+        await reload()
+    }
+
+    private func scheduleIcons() {
+        iconTask?.cancel()
+        iconTask = Task { [weak self] in
+            guard let self else { return }
+            await self.loadIcons()
+        }
     }
 
     func reload() async {
@@ -244,8 +306,9 @@ final class AppCatalog {
         switch result {
         case .success(let list):
             apps = list
+            didLoad = true
             reconcile()
-            await loadIcons()
+            scheduleIcons()
         case .failure(let error):
             errorMessage = error.localizedDescription
         }
@@ -258,13 +321,20 @@ final class AppCatalog {
         forced = forced.filter { byID[$0] != nil }
         appliedTargets = appliedTargets.filter { byID[$0.key] != nil }
         trialTargets = trialTargets.filter { byID[$0.key] != nil }
+        // A previous write may have succeeded before the process was killed or its
+        // readback failed. A fresh read is enough to finish an already-restored app.
+        for id in compatibilityProtected {
+            if let app = byID[id], let original = originals[id], app.sdk == original {
+                clearTracking(for: id)
+            }
+        }
         for id in forced {
-            if let app = byID[id], app.sdk != (appliedTargets[id] ?? .target), app.sdk < .trial27 {
+            if !compatibilityProtected.contains(id), let app = byID[id], app.sdk != (appliedTargets[id] ?? .target), app.sdk < .trial27 {
                 // The app was updated or rebuilt; its new recorded SDK is the restore point.
                 originals[id] = app.sdk
             }
         }
-        selection = selection.filter { byID[$0] != nil }
+        selection = selection.filter { byID[$0] != nil }.subtracting(compatibilityProtected)
         persist()
     }
 
@@ -272,7 +342,8 @@ final class AppCatalog {
         guard !applying && !loading else { return }
         let changes = pendingChanges
         guard !changes.isEmpty else { return }
-        let requestedSelection = selection
+        var requestedSelection = selection.subtracting(compatibilityProtected)
+        if let selfID = Bundle.main.bundleIdentifier { requestedSelection.remove(selfID) }
         applying = true
         errorMessage = nil
         resultMessage = nil
@@ -283,16 +354,20 @@ final class AppCatalog {
         }
         persist()
         let payload = changes.mapValues { $0.triple }
-        let result: Result<(String, [InstalledApp]), Error> = await Task.detached {
+        let (result, writeLog): (Result<(String, [InstalledApp]), Error>, String) = await Task.detached {
+            let engine = FDEngine.shared
+            let summary: String
+            do { summary = try engine.applyVersions(payload, dryRun: false) }
+            catch { return (.failure(error), engine.lastLog) }
+            let log = engine.lastLog
             do {
-                let summary = try FDEngine.shared.applyVersions(payload, dryRun: false)
-                let verified = try FDEngine.shared.loadApps()
+                let verified = try engine.loadApps()
                     .filter { !($0.signer.isEmpty && $0.bundleID.hasPrefix("com.apple.")) }
                     .map(InstalledApp.init)
-                return .success((summary, verified))
-            } catch { return .failure(error) }
+                return (.success((summary, verified)), log)
+            } catch { return (.failure(error), log) }
         }.value
-        engineLog = FDEngine.shared.lastLog
+        engineLog = writeLog
         switch result {
         case .success(let (summary, verified)):
             apps = verified
@@ -307,10 +382,7 @@ final class AppCatalog {
                     forced.insert(id)
                     appliedTargets[id] = version
                 } else {
-                    originals[id] = nil
-                    forced.remove(id)
-                    appliedTargets[id] = nil
-                    trialTargets[id] = nil
+                    clearTracking(for: id)
                 }
             }
             persist()
@@ -319,11 +391,18 @@ final class AppCatalog {
             } else {
                 errorMessage = String(localized: "SDK verification failed. Restore points were kept. Reload and try again.") + "\n" + failed.sorted().joined(separator: "\n")
             }
-            await loadIcons()
+            scheduleIcons()
         case .failure(let error):
             errorMessage = error.localizedDescription
             // Do not reload here: it would clear the error or reinterpret a partial write.
         }
+    }
+
+    private func clearTracking(for id: String) {
+        originals[id] = nil
+        forced.remove(id)
+        appliedTargets[id] = nil
+        trialTargets[id] = nil
     }
 
     private func persist() {
@@ -331,5 +410,6 @@ final class AppCatalog {
         defaults.set(try? JSONEncoder().encode(originals), forKey: "originals")
         defaults.set(try? JSONEncoder().encode(appliedTargets), forKey: "appliedTargets")
         defaults.set(try? JSONEncoder().encode(trialTargets), forKey: "trialTargets")
+        defaults.set(Array(compatibilityProtected).sorted(), forKey: "compatibilityProtected")
     }
 }

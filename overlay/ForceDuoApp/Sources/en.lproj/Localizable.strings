@@ -84,3 +84,13 @@
 "Cannot read the installed app identity. No SDK was changed." = "Cannot read the installed app identity. No SDK was changed.";
 "Cannot read a supported executable header. No SDK was changed." = "Cannot read a supported executable header. No SDK was changed.";
 "Executable SDK is missing or ambiguous. No SDK was changed." = "Executable SDK is missing or ambiguous. No SDK was changed.";
+
+// Compatibility recovery and protection
+"Could not save the cache backup. Nothing written." = "Could not save the cache backup. Nothing written.";
+"Compatibility" = "Compatibility";
+"Compatibility protection" = "Compatibility protection";
+"Sound / black screen recovery" = "Sound / black screen recovery";
+"Restore saved original SDK" = "Restore saved original SDK";
+"Remove compatibility protection" = "Remove compatibility protection";
+"The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed." = "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.";
+"For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code." = "For sound lost after Notification Center, Control Center, folding or unfolding, or an app that opens to a black screen: recover its compiled SDK, tap Apply, then restart. This removes forced adaptation for this app and protects it from Select all. It does not patch the app's audio or rendering code.";

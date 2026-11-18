@@ -1,8 +1,8 @@
-name: Build Force Duo SDK Recovery IPA
+name: Build Force Duo Compatibility Recovery IPA
 
 on:
   push:
-    branches: [sdk-recovery]
+    branches: [main, sdk-recovery, "fix/compatibility-recovery"]
   workflow_dispatch:
 
 permissions:
@@ -69,12 +69,12 @@ jobs:
           test -f "$app/ForceDuo"
           mkdir -p "$RUNNER_TEMP/IpaPayload/Payload"
           cp -R "$app" "$RUNNER_TEMP/IpaPayload/Payload/ForceDuo.app"
-          (cd "$RUNNER_TEMP/IpaPayload" && zip -qry "$GITHUB_WORKSPACE/ForceDuo-sdk-recovery-unsigned.ipa" Payload)
-          unzip -t ForceDuo-sdk-recovery-unsigned.ipa | tail -1
+          (cd "$RUNNER_TEMP/IpaPayload" && zip -qry "$GITHUB_WORKSPACE/ForceDuo-compatibility-recovery-unsigned.ipa" Payload)
+          unzip -t ForceDuo-compatibility-recovery-unsigned.ipa | tail -1
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ForceDuo-sdk-recovery-unsigned-IPA
-          path: ForceDuo-sdk-recovery-unsigned.ipa
+          name: ForceDuo-compatibility-recovery-unsigned-IPA
+          path: ForceDuo-compatibility-recovery-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
