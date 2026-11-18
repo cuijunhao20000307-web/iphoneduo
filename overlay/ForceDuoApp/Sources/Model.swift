@@ -319,7 +319,18 @@ final class AppCatalog {
             await recoverOriginal(for: current, announcePending: false)
             guard errorMessage == nil, resultMessage == nil else { return }
         }
-        await apply(onlyRestoreFor: current)
+        await apply(.restore(current))
+    }
+
+    func canTestConservativeSDK(for app: InstalledApp) -> Bool {
+        guard app.id != Bundle.main.bundleIdentifier else { return false }
+        if originals[app.id] != nil, originalContainers[app.id] != app.container { return false }
+        let original = originals[app.id] ?? app.sdk
+        return original.major > 0 && original < .trial27
+    }
+
+    func testConservativeSDK(for app: InstalledApp) async {
+        await apply(.conservativeTrial(app))
     }
 
     func diagnosticReport(for app: InstalledApp) -> String {
@@ -426,6 +437,7 @@ final class AppCatalog {
                 // The write reached the cache before the app could verify it.
                 forced.insert(id)
                 appliedTargets[id] = attempted
+                trialTargets[id] = attempted == .target ? nil : attempted
                 recoverySnapshots[id] = nil
                 if !compatibilityProtected.contains(id) { selection.insert(id) }
             } else {
@@ -455,11 +467,33 @@ final class AppCatalog {
         persist()
     }
 
-    func apply(onlyRestoreFor target: InstalledApp? = nil) async {
+    func apply() async {
+        await apply(.batch)
+    }
+
+    private enum WriteScope {
+        case batch
+        case restore(InstalledApp)
+        case conservativeTrial(InstalledApp)
+    }
+
+    private func apply(_ scope: WriteScope) async {
         guard !applying && !loading else { return }
+        errorMessage = nil
+        resultMessage = nil
         let changes: [String: SDKVersion]
         let verifyOnly: Bool
-        if let target {
+        let trialID: String?
+        let requestedSelection: Set<String>
+        switch scope {
+        case .batch:
+            changes = pendingChanges
+            verifyOnly = false
+            trialID = nil
+            var enabled = selection.subtracting(compatibilityProtected).subtracting(restoreRequests)
+            if let selfID = Bundle.main.bundleIdentifier { enabled.remove(selfID) }
+            requestedSelection = enabled
+        case .restore(let target):
             guard let current = apps.first(where: { $0.id == target.id && $0.container == target.container }),
                   restoreRequests.contains(current.id),
                   originalContainers[current.id] == current.container,
@@ -471,16 +505,21 @@ final class AppCatalog {
             // record to the engine before declaring that no write is needed.
             verifyOnly = current.sdk == original
             changes = [current.id: original]
-        } else {
+            trialID = nil
+            requestedSelection = []
+        case .conservativeTrial(let target):
+            guard let current = apps.first(where: { $0.id == target.id && $0.container == target.container }),
+                  canTestConservativeSDK(for: current) else {
+                errorMessage = String(localized: "This app is not eligible for the SDK 27.0 test. Refresh the app list and check its original SDK.")
+                return
+            }
+            changes = [current.id: .trial27]
             verifyOnly = false
-            changes = pendingChanges
+            trialID = current.id
+            requestedSelection = [current.id]
         }
         guard !changes.isEmpty else { return }
-        var requestedSelection = selection.subtracting(compatibilityProtected).subtracting(restoreRequests)
-        if let selfID = Bundle.main.bundleIdentifier { requestedSelection.remove(selfID) }
         applying = true
-        errorMessage = nil
-        resultMessage = nil
         defer { applying = false }
         // Save restore points before writing, including if the process is interrupted.
         var expectedSDKs: [String: [NSNumber]] = [:]
@@ -527,6 +566,12 @@ final class AppCatalog {
                     continue // Keep the original and pending selection for retry.
                 }
                 if requestedSelection.contains(id) {
+                    if id == trialID {
+                        compatibilityProtected.remove(id)
+                        restoreRequests.remove(id)
+                        trialTargets[id] = version
+                        selection.insert(id)
+                    }
                     forced.insert(id)
                     appliedTargets[id] = version
                     recoverySnapshots[id] = nil
@@ -540,9 +585,13 @@ final class AppCatalog {
                 if verifyOnly {
                     resultMessage = String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
                 } else {
-                    let nextStep = target == nil
-                        ? String(localized: "Restart the iPhone Duo so apps reload the new interface.")
-                        : String(localized: "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately.")
+                    let nextStep: String
+                    switch scope {
+                    case .batch:
+                        nextStep = String(localized: "Restart the iPhone Duo so apps reload the new interface.")
+                    case .restore, .conservativeTrial:
+                        nextStep = String(localized: "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately.")
+                    }
                     resultMessage = summary + "\n" + nextStep
                 }
             } else {

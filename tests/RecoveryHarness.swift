@@ -391,6 +391,47 @@ extension AppCatalog {
         print("PASS: a stale list cannot falsely report a saved baseline already restored")
 
         c = fresh()
+        let unaffected = FDAppRecord()
+        unaffected.bundleID = "test.unaffected"
+        unaffected.containerUUID = "unaffected-container"
+        FDEngine.shared.extraRecords = [unaffected]
+        await c.reload()
+        await c.restoreAudioBaseline(for: c.apps[0])
+        let protectedApp = c.apps[0]
+        assert(c.compatibilityProtected.contains(protectedApp.id))
+        c.setTrialTarget(.trialLatest, for: c.apps[1])
+        await c.testConservativeSDK(for: protectedApp)
+        assert(c.errorMessage == nil && c.resultMessage != nil)
+        assert(c.apps[0].sdk == .trial27 && c.originals[protectedApp.id]?.major == 26)
+        assert(!c.compatibilityProtected.contains(protectedApp.id))
+        assert(FDEngine.shared.appliedIDs == [protectedApp.id] && unaffected.sdkMajor == 26)
+        assert(c.pendingChanges == [unaffected.bundleID: .trialLatest])
+        await c.restoreAudioBaseline(for: c.apps[0])
+        assert(c.apps[0].sdk.major == 26 && c.compatibilityProtected.contains(protectedApp.id))
+        assert(c.pendingChanges == [unaffected.bundleID: .trialLatest])
+        print("PASS: the single-app SDK 27.0 trial is explicit, isolated, and reversible")
+
+        c = fresh()
+        FDEngine.shared.record.sdkMajor = 27
+        FDEngine.shared.record.sdkMinor = 2
+        await c.reload()
+        await c.testConservativeSDK(for: c.apps[0])
+        assert(c.errorMessage != nil && c.resultMessage == nil && FDEngine.shared.writeChecks == 0)
+        print("PASS: the SDK 27.0 trial does not downgrade an app with a native recent SDK")
+
+        c = fresh()
+        FDEngine.shared.failRead = true
+        await c.testConservativeSDK(for: c.apps[0])
+        assert(c.errorMessage != nil && FDEngine.shared.record.sdkMajor == 27)
+        FDEngine.shared.failRead = false
+        let trialAfterReadbackFailure = AppCatalog()
+        await trialAfterReadbackFailure.reload()
+        assert(trialAfterReadbackFailure.appliedTargets["test.game"] == .trial27)
+        assert(trialAfterReadbackFailure.originals["test.game"]?.major == 26)
+        assert(trialAfterReadbackFailure.pendingChanges.isEmpty)
+        print("PASS: recovering a verified SDK 27.0 trial never queues an unintended SDK 27.1 write")
+
+        c = fresh()
         c.engineLog = "Cache lock 5 ms."
         await c.exportDiagnostics()
         assert(c.resultMessage != nil && c.errorMessage == nil && c.engineLog == "Cache lock 5 ms.")

@@ -297,6 +297,11 @@ struct AppRow: View {
             Button("Restore only this app for the sound test") {
                 Task { await catalog.restoreAudioBaseline(for: app) }
             }
+            if catalog.canTestConservativeSDK(for: app) {
+                Button("Test SDK 27.0 for this app only") {
+                    Task { await catalog.testConservativeSDK(for: app) }
+                }
+            }
             Button("Recover SDK from installed app") {
                 Task { await catalog.recoverOriginal(for: app) }
             }
@@ -309,7 +314,7 @@ struct AppRow: View {
                 }
             }
         } message: {
-            Text("For the sound test, restore only this app to turn off its forced adaptation. Restart the phone, then test unfolding and Notification Center separately.")
+            Text("Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing.")
             if catalog.hasPendingRestore(for: app) {
                 Text("Removing compatibility protection keeps the pending restore. Turn the app back on to cancel it.")
             }

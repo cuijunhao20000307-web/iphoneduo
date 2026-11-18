@@ -104,3 +104,6 @@
 "For the sound test, restore only this app to turn off its forced adaptation. Restart the phone, then test unfolding and Notification Center separately." = "恢复后，此应用会退出强制适配。请重启手机，再分别测试翻开切到内屏和下拉、收起通知中心后的声音。";
 "The app record changed. Refresh and try the single-app restore again." = "应用记录发生变化。请刷新列表后重新尝试单独恢复。";
 "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately." = "请重启 iPhone Duo，再分别测试游戏切到内屏，以及下拉并收起通知中心后的声音。";
+"Test SDK 27.0 for this app only" = "仅对此应用试用 SDK 27.0";
+"Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing." = "可试用 SDK 27.0，测试保留状态栏区域的内屏布局。也可恢复原始 SDK。每次只改当前应用，请重启手机后再试。";
+"This app is not eligible for the SDK 27.0 test. Refresh the app list and check its original SDK." = "此应用无法试用 SDK 27.0。请刷新列表并确认原始 SDK。";

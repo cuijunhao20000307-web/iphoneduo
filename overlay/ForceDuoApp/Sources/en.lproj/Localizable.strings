@@ -104,3 +104,6 @@
 "For the sound test, restore only this app to turn off its forced adaptation. Restart the phone, then test unfolding and Notification Center separately." = "For the sound test, restore only this app to turn off its forced adaptation. Restart the phone, then test unfolding and Notification Center separately.";
 "The app record changed. Refresh and try the single-app restore again." = "The app record changed. Refresh and try the single-app restore again.";
 "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately." = "Restart the iPhone Duo, then test unfolding in the game and opening and dismissing Notification Center separately.";
+"Test SDK 27.0 for this app only" = "Test SDK 27.0 for this app only";
+"Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing." = "Test SDK 27.0 to try a less aggressive inner-display mode, or restore the original SDK. Each action changes only this app. Restart the phone before testing.";
+"This app is not eligible for the SDK 27.0 test. Refresh the app list and check its original SDK." = "This app is not eligible for the SDK 27.0 test. Refresh the app list and check its original SDK.";
