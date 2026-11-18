@@ -23,6 +23,12 @@ class FDEngine {
     var loadCount = 0
     var replaceAfterRecovery = false
     var replaceAfterWrite = false
+    var failExport = false
+    func exportDiagnostics() throws -> String {
+        lastLog = "diagnostic export"
+        if failExport { throw NSError(domain: "test-export", code: 1) }
+        return lastLog
+    }
     func recoverSDK(forBundleID id: String, expectedContainer: String) throws -> [NSNumber] {
         if failRecovery { throw NSError(domain: "test-recovery", code: 1) }
         guard id == record.bundleID, expectedContainer == record.containerUUID else {
@@ -65,7 +71,7 @@ extension AppCatalog {
 
 @main struct RecoveryTests {
     @MainActor static func fresh() -> AppCatalog {
-        for key in ["forced", "originals", "originalContainers", "unverifiedOverrides", "appliedTargets", "trialTargets", "compatibilityProtected"] {
+        for key in ["forced", "originals", "originalContainers", "recoverySnapshots", "unverifiedOverrides", "appliedTargets", "trialTargets", "compatibilityProtected"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         FDEngine.shared.record = FDAppRecord()
@@ -75,6 +81,7 @@ extension AppCatalog {
         FDEngine.shared.failRecovery = false
         FDEngine.shared.replaceAfterRecovery = false
         FDEngine.shared.replaceAfterWrite = false
+        FDEngine.shared.failExport = false
         FDEngine.shared.recoveredSDK = [26, 0, 0]
         FDEngine.shared.loadCount = 0
         IconTestState.delay = false
@@ -254,6 +261,38 @@ extension AppCatalog {
         assert(c.errorMessage != nil && c.originals.isEmpty && c.selection.isEmpty)
         assert(c.pendingChanges.isEmpty)
         print("PASS: a replacement during readback cannot inherit a pending override")
+
+        c = fresh()
+        await enable(c)
+        FDEngine.shared.record.sdkMinor = 2
+        await c.recoverOriginal(for: c.apps[0])
+        assert(c.errorMessage == nil && c.pendingChanges["test.game"]?.major == 26)
+        let reopened = AppCatalog()
+        await reopened.reload()
+        assert(reopened.pendingChanges["test.game"]?.major == 26)
+        await reopened.apply()
+        assert(reopened.apps[0].sdk.major == 26 && reopened.originals.isEmpty)
+        print("PASS: explicit recovery replaces stale override history and survives relaunch")
+
+        c = fresh()
+        FDEngine.shared.record.sdkMajor = 27
+        FDEngine.shared.record.sdkMinor = 2
+        await c.recoverOriginal(for: c.apps[0])
+        assert(c.pendingChanges["test.game"]?.major == 26)
+        FDEngine.shared.record.sdkMinor = 3
+        await c.reload()
+        assert(c.pendingChanges.isEmpty && c.originals.isEmpty)
+        assert(c.compatibilityProtected.contains("test.game"))
+        print("PASS: subsequent SDK changes invalidate the queued executable recovery")
+
+        c = fresh()
+        c.engineLog = "Cache lock 5 ms."
+        await c.exportDiagnostics()
+        assert(c.resultMessage != nil && c.errorMessage == nil && c.engineLog == "Cache lock 5 ms.")
+        FDEngine.shared.failExport = true
+        await c.exportDiagnostics()
+        assert(c.resultMessage == nil && c.errorMessage != nil && !c.loading)
+        print("PASS: diagnostics surface success and failure without erasing cache lock timing")
 
         c = fresh()
         IconTestState.delay = true

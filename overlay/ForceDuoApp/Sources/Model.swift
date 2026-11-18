@@ -90,6 +90,8 @@ final class AppCatalog {
     /// Original SDK of each app before we touched it.
     private(set) var originals: [String: SDKVersion]
     private var originalContainers: [String: String]
+    /// Cache SDK observed when we recovered the original directly from an executable.
+    private var recoverySnapshots: [String: SDKVersion]
     /// Overrides that may have reached the live cache before verification completed.
     private var unverifiedOverrides: [String: SDKVersion]
     /// The version last written by this app; old installs default to 27.1.
@@ -113,6 +115,8 @@ final class AppCatalog {
             originals = [:]
         }
         originalContainers = defaults.dictionary(forKey: "originalContainers") as? [String: String] ?? [:]
+        recoverySnapshots = (defaults.data(forKey: "recoverySnapshots")
+            .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
         unverifiedOverrides = (defaults.data(forKey: "unverifiedOverrides")
             .flatMap { try? JSONDecoder().decode([String: SDKVersion].self, from: $0) }) ?? [:]
         appliedTargets = (defaults.data(forKey: "appliedTargets")
@@ -204,8 +208,12 @@ final class AppCatalog {
 
     func deselectAll() {
         guard !applying && !loading else { return }
-        for app in apps where originals[app.id] != nil { restoreOriginal(for: app) }
+        for app in apps where originals[app.id] != nil {
+            compatibilityProtected.insert(app.id)
+            trialTargets[app.id] = nil
+        }
         selection.removeAll()
+        persist()
     }
 
     func restoreOriginal(for app: InstalledApp) {
@@ -263,12 +271,14 @@ final class AppCatalog {
                 return
             }
             apps = list
+            // Start a new recovery from the verified executable, replacing any
+            // older override history that no longer matches the current cache.
+            clearTracking(for: id)
             originals[id] = SDKVersion(major: triple[0].intValue, minor: triple[1].intValue, patch: triple[2].intValue)
             originalContainers[id] = container
-            unverifiedOverrides[id] = nil
+            recoverySnapshots[id] = installed.sdk
             selection.remove(id)
             compatibilityProtected.insert(id)
-            trialTargets[id] = nil
             reconcile()
             resultMessage = originals[id] == nil
                 ? String(localized: "The recorded SDK already matches the installed app. Compatibility protection is enabled; no cache write is needed.")
@@ -296,6 +306,31 @@ final class AppCatalog {
     func loadIfNeeded() async {
         guard !didLoad else { return }
         await reload()
+    }
+
+    func exportDiagnostics() async {
+        guard !loading && !applying else { return }
+        loading = true
+        errorMessage = nil
+        resultMessage = nil
+        defer { loading = false }
+        let (result, log): (Result<String, Error>, String) = await Task.detached {
+            let engine = FDEngine.shared
+            do {
+                let report = try engine.exportDiagnostics()
+                return (.success(report), report)
+            } catch {
+                return (.failure(error), engine.lastLog)
+            }
+        }.value
+        // Keep the last Apply log, including the duration of the cache lock.
+        if engineLog.isEmpty { engineLog = log }
+        switch result {
+        case .success:
+            resultMessage = String(localized: "Diagnostics saved in Files → On My iPhone → Force Duo → Diagnostics.")
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func scheduleIcons() {
@@ -357,14 +392,17 @@ final class AppCatalog {
                 // The write reached the cache before the app could verify it.
                 forced.insert(id)
                 appliedTargets[id] = attempted
+                recoverySnapshots[id] = nil
                 if !compatibilityProtected.contains(id) { selection.insert(id) }
-            } else if (wasForced || attempted != nil), app.sdk != originals[id],
-                      !wasForced || app.sdk != forcedVersion {
-                // The cache now contains an SDK that this installation did not write.
-                // Discard the old restore point rather than replacing the current SDK.
-                clearTracking(for: id)
-                selection.remove(id)
-                continue
+            } else {
+                let expectedVersion = recoverySnapshots[id] ?? (wasForced ? forcedVersion : nil)
+                if (expectedVersion != nil || attempted != nil),
+                   app.sdk != expectedVersion, app.sdk != originals[id] {
+                    // A later cache change invalidates the old write or recovery.
+                    clearTracking(for: id)
+                    selection.remove(id)
+                    continue
+                }
             }
             if originals[id] != nil && originalContainers[id] == nil {
                 // Earlier versions did not save the installation identifier.
@@ -440,6 +478,7 @@ final class AppCatalog {
                 if requestedSelection.contains(id) {
                     forced.insert(id)
                     appliedTargets[id] = version
+                    recoverySnapshots[id] = nil
                     unverifiedOverrides[id] = nil
                 } else {
                     clearTracking(for: id)
@@ -461,6 +500,7 @@ final class AppCatalog {
     private func clearTracking(for id: String) {
         originals[id] = nil
         originalContainers[id] = nil
+        recoverySnapshots[id] = nil
         unverifiedOverrides[id] = nil
         forced.remove(id)
         appliedTargets[id] = nil
@@ -471,6 +511,7 @@ final class AppCatalog {
         defaults.set(Array(forced), forKey: "forced")
         defaults.set(try? JSONEncoder().encode(originals), forKey: "originals")
         defaults.set(originalContainers, forKey: "originalContainers")
+        defaults.set(try? JSONEncoder().encode(recoverySnapshots), forKey: "recoverySnapshots")
         defaults.set(try? JSONEncoder().encode(unverifiedOverrides), forKey: "unverifiedOverrides")
         defaults.set(try? JSONEncoder().encode(appliedTargets), forKey: "appliedTargets")
         defaults.set(try? JSONEncoder().encode(trialTargets), forKey: "trialTargets")

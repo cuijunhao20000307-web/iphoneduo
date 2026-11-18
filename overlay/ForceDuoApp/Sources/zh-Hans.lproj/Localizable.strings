@@ -98,3 +98,4 @@
 "An app is no longer installed. Reload before applying. Nothing written." = "要修改的应用已不在安装列表中。请刷新列表，本次未写入。";
 "The app was updated during recovery. Reload and try again." = "恢复过程中应用已更新。请刷新列表后重试。";
 "The cache changed while it was being read. Reload and try again." = "系统缓存在读取时发生变化。请刷新列表后重试。";
+"Diagnostics saved in Files → On My iPhone → Force Duo → Diagnostics." = "诊断已保存。前往“文件”→“我的 iPhone”→“Force Duo”→“Diagnostics”查看。";

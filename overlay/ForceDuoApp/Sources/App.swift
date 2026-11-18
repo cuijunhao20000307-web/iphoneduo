@@ -222,8 +222,9 @@ struct AppListView: View {
                     Button("Reload", systemImage: "arrow.clockwise") { Task { await catalog.reload() } }
                         .disabled(catalog.loading || catalog.applying)
                     Button("Export diagnostics", systemImage: "stethoscope") {
-                        Task.detached { _ = try? FDEngine.shared.exportDiagnostics() }
+                        Task { await catalog.exportDiagnostics() }
                     }
+                    .disabled(catalog.loading || catalog.applying)
                     Button("Game compatibility", systemImage: "gamecontroller") { showCompatibilityHelp = true }
                 } label: {
                     Image(systemName: "ellipsis")

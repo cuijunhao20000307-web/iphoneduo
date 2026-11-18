@@ -227,9 +227,22 @@ static NSData *readAll(int fd, NSUInteger maximum) {
 }
 
 static BOOL pwriteAll(int fd, const void *bytes, size_t size, off_t offset) {
-    ssize_t result;
-    do { result = pwrite(fd, bytes, size, offset); } while (result < 0 && errno == EINTR);
-    return result == (ssize_t)size;
+    const uint8_t *cursor = bytes;
+    while (size) {
+        ssize_t result = pwrite(fd, cursor, size, offset);
+        if (result < 0 && errno == EINTR) continue;
+        if (result <= 0) return NO;
+        cursor += result;
+        size -= (size_t)result;
+        offset += result;
+    }
+    return YES;
+}
+
+static BOOL syncStore(int fd) {
+    int result;
+    do { result = fsync(fd); } while (result < 0 && errno == EINTR);
+    return result == 0;
 }
 
 static BOOL fdStoreIsCurrent(int directory, const char *name, const struct stat *opened) {
@@ -597,6 +610,7 @@ static NSArray<NSNumber *> *recordSDK(FDAppRecord *app) {
     [_lock lock];
     FDAccess *access = nil;
     int fd = -1;
+    NSString *unusedBackupPath = nil;
     @try {
         [_log setString:@""];
         access = [self openStoreAccess:error];
@@ -706,14 +720,12 @@ static NSArray<NSNumber *> *recordSDK(FDAppRecord *app) {
         NSDateFormatter *formatter = [NSDateFormatter new];
         formatter.dateFormat = @"yyyyMMdd-HHmmss";
         NSString *backupName = [NSString stringWithFormat:@"%@-%@-%@", [formatter stringFromDate:NSDate.date], NSUUID.UUID.UUIDString, access.storeName];
-        if (![original writeToFile:[backups stringByAppendingPathComponent:backupName] atomically:YES]) {
+        NSString *backupPath = [backups stringByAppendingPathComponent:backupName];
+        if (![original writeToFile:backupPath atomically:YES]) {
             if (error) *error = fdError(NSLocalizedString(@"Could not save the cache backup. Nothing written.", nil));
             return nil;
         }
-        NSArray *old = [[[NSFileManager.defaultManager contentsOfDirectoryAtPath:backups error:nil]
-            sortedArrayUsingSelector:@selector(compare:)] mutableCopy];
-        for (NSUInteger i = 0; i + 5 < old.count; ++i)
-            [NSFileManager.defaultManager removeItemAtPath:[backups stringByAppendingPathComponent:old[i]] error:nil];
+        unusedBackupPath = backupPath;
 
         // Write the live store in place.
         const char *storeName = access.storeName.fileSystemRepresentation;
@@ -734,10 +746,20 @@ static NSArray<NSNumber *> *recordSDK(FDAppRecord *app) {
             if (error) *error = fdError(NSLocalizedString(@"lsd just changed or locked the cache. Please try again.", nil));
             return nil;
         }
+        // Keep the backup once the first live write is attempted. A short write
+        // can change part of a record even if a subsequent retry fails.
+        unusedBackupPath = nil;
         BOOL wrote = YES;
-        for (FDAppRecord *app in changed)
-            wrote = wrote && pwriteAll(fd, b + app.sdkOffset, 24, (off_t)app.sdkOffset);
-        wrote = wrote && pwriteAll(fd, b + 6, 2, 6) && fsync(fd) == 0;
+        NSUInteger attemptedRecords = 0;
+        for (FDAppRecord *app in changed) {
+            ++attemptedRecords;
+            if (!pwriteAll(fd, b + app.sdkOffset, 24, (off_t)app.sdkOffset)) {
+                wrote = NO;
+                break;
+            }
+        }
+        BOOL attemptedChecksum = wrote;
+        wrote = wrote && pwriteAll(fd, b + 6, 2, 6) && syncStore(fd);
         // CoreServicesStore already accepted the candidate before we took the
         // lock. Verify those same bytes on this descriptor without opening the
         // live store a second time while it is exclusively locked.
@@ -745,11 +767,12 @@ static NSArray<NSNumber *> *recordSDK(FDAppRecord *app) {
             fdStoreIsCurrent(access.dir, storeName, &live);
         if (!verified) {
             BOOL restored = YES;
-            for (FDAppRecord *app in changed) {
+            for (NSUInteger i = 0; i < attemptedRecords; ++i) {
+                FDAppRecord *app = changed[i];
                 if (!pwriteAll(fd, a + app.sdkOffset, 24, (off_t)app.sdkOffset)) restored = NO;
             }
-            if (!pwriteAll(fd, a + 6, 2, 6)) restored = NO;
-            if (fsync(fd) != 0) restored = NO;
+            if (attemptedChecksum && !pwriteAll(fd, a + 6, 2, 6)) restored = NO;
+            if (!syncStore(fd)) restored = NO;
             restored = restored && [readAll(fd, kMaxStore) isEqualToData:original];
             close(fd);
             fd = -1;
@@ -763,10 +786,25 @@ static NSArray<NSNumber *> *recordSDK(FDAppRecord *app) {
         fd = -1;
         [_log appendFormat:@"Applied %lu records, inode %llu. Cache lock %.1f ms.\n", (unsigned long)changed.count,
             (unsigned long long)live.st_ino, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - lockStart) / 1.0e6];
+        NSMutableArray<NSString *> *previousBackups = [NSMutableArray array];
+        for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:backups error:nil]) {
+            if ([name isEqualToString:backupName] || ![name containsString:@"-com.apple.LaunchServices-"] ||
+                ![name hasSuffix:@"-v2.csstore"]) continue;
+            NSString *path = [backups stringByAppendingPathComponent:name];
+            struct stat entry;
+            if (lstat(path.fileSystemRepresentation, &entry) == 0 && S_ISREG(entry.st_mode)) {
+                [previousBackups addObject:path];
+            }
+        }
+        [previousBackups sortUsingSelector:@selector(compare:)];
+        for (NSUInteger i = 0; i + 4 < previousBackups.count; ++i) {
+            [NSFileManager.defaultManager removeItemAtPath:previousBackups[i] error:nil];
+        }
         return [NSString stringWithFormat:NSLocalizedString(@"Wrote and verified %lu app(s):\n%@", nil), (unsigned long)changed.count, summary];
     } @finally {
         if (fd >= 0) close(fd);
         [access close];
+        if (unusedBackupPath) [NSFileManager.defaultManager removeItemAtPath:unusedBackupPath error:nil];
         [_lock unlock];
     }
 }
@@ -845,27 +883,35 @@ static NSArray<NSNumber *> *recordSDK(FDAppRecord *app) {
     @try {
         [_log setString:@""];
         [_log appendFormat:@"iOS %@, %@\n", NSProcessInfo.processInfo.operatingSystemVersionString, FDEngine.deviceModel];
-        FDAccess *access = [self openStoreAccess:error];
-        if (!access) {
-            NSString *folder = documentsPath(@"Diagnostics");
-            [_log writeToFile:[folder stringByAppendingPathComponent:@"report.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSString *folder = documentsPath(@"Diagnostics");
+        NSError *captureError = nil;
+        FDAccess *access = [self openStoreAccess:&captureError];
+        if (access) {
+            struct stat st;
+            NSData *store = [self readStore:access stat:&st error:&captureError];
+            NSError *openError = nil;
+            BOOL valid = store && fdStoreOpens(access.storePath, &openError);
+            [access close];
+            if (store) {
+                [_log appendFormat:@"Store %@: %lu bytes, inode %llu, mode %o, uid %u, CSStore valid %d (%@ %ld)\n",
+                    access.storeName, (unsigned long)store.length, (unsigned long long)st.st_ino, st.st_mode, st.st_uid,
+                    valid, openError.domain, (long)openError.code];
+                [store writeToFile:[folder stringByAppendingPathComponent:@"store.csstore"] options:NSDataWritingAtomic error:&captureError];
+                for (FDAppRecord *app in parseApps(store, _log))
+                    [_log appendFormat:@"%@\t%@\t%ld.%ld.%ld\t%@\t0x%lx\n", app.bundleID, app.name,
+                        (long)app.sdkMajor, (long)app.sdkMinor, (long)app.sdkPatch, app.signer, (unsigned long)app.sdkOffset];
+            }
+        }
+        if (captureError) {
+            [_log appendFormat:@"No new cache snapshot was saved: %@\n", captureError.localizedDescription];
+        }
+        if (![_log writeToFile:[folder stringByAppendingPathComponent:@"report.txt"] atomically:YES encoding:NSUTF8StringEncoding error:error]) {
             return nil;
         }
-        struct stat st;
-        NSData *store = [self readStore:access stat:&st error:error];
-        NSError *openError = nil;
-        BOOL valid = store && fdStoreOpens(access.storePath, &openError);
-        [access close];
-        [_log appendFormat:@"Store %@: %lu bytes, inode %llu, mode %o, uid %u, CSStore valid %d (%@ %ld)\n",
-            access.storeName, (unsigned long)store.length, (unsigned long long)st.st_ino, st.st_mode, st.st_uid,
-            valid, openError.domain, (long)openError.code];
-        NSString *folder = documentsPath(@"Diagnostics");
-        if (store) [store writeToFile:[folder stringByAppendingPathComponent:@"store.csstore"] atomically:YES];
-        NSArray<FDAppRecord *> *apps = store ? parseApps(store, _log) : nil;
-        for (FDAppRecord *app in apps)
-            [_log appendFormat:@"%@\t%@\t%ld.%ld.%ld\t%@\t0x%lx\n", app.bundleID, app.name,
-                (long)app.sdkMajor, (long)app.sdkMinor, (long)app.sdkPatch, app.signer, (unsigned long)app.sdkOffset];
-        [_log writeToFile:[folder stringByAppendingPathComponent:@"report.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        if (captureError) {
+            if (error) *error = captureError;
+            return nil;
+        }
         return [_log copy];
     } @finally {
         [_lock unlock];
