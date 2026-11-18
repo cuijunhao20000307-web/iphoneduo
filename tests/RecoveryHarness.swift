@@ -22,6 +22,7 @@ class FDEngine {
     var recoveredSDK: [NSNumber] = [26, 0, 0]
     var loadCount = 0
     var replaceAfterRecovery = false
+    var replaceAfterWrite = false
     func recoverSDK(forBundleID id: String, expectedContainer: String) throws -> [NSNumber] {
         if failRecovery { throw NSError(domain: "test-recovery", code: 1) }
         guard id == record.bundleID, expectedContainer == record.containerUUID else {
@@ -47,6 +48,7 @@ class FDEngine {
             record.sdkMajor = v[0].intValue
             record.sdkMinor = v[1].intValue
             record.sdkPatch = v[2].intValue
+            if replaceAfterWrite { record.containerUUID = "updated-after-write" }
         }
         return "written"
     }
@@ -72,6 +74,7 @@ extension AppCatalog {
         FDEngine.shared.failRead = false
         FDEngine.shared.failRecovery = false
         FDEngine.shared.replaceAfterRecovery = false
+        FDEngine.shared.replaceAfterWrite = false
         FDEngine.shared.recoveredSDK = [26, 0, 0]
         FDEngine.shared.loadCount = 0
         IconTestState.delay = false
@@ -234,6 +237,23 @@ extension AppCatalog {
         await interrupted.apply()
         assert(interrupted.apps[0].sdk.major == 26)
         print("PASS: a completed non-default override is recoverable after failed readback and relaunch")
+
+        c = fresh()
+        c.setTrialTarget(.trial27, for: c.apps[0])
+        FDEngine.shared.record.sdkMajor = 27
+        FDEngine.shared.record.sdkMinor = 1
+        await c.apply()
+        await c.reload()
+        assert(c.pendingChanges.isEmpty && c.originals.isEmpty && c.selection.isEmpty)
+        print("PASS: an external SDK 27.1 change is not mistaken for a previously applied override")
+
+        c = fresh()
+        c.setTrialTarget(.trial27, for: c.apps[0])
+        FDEngine.shared.replaceAfterWrite = true
+        await c.apply()
+        assert(c.errorMessage != nil && c.originals.isEmpty && c.selection.isEmpty)
+        assert(c.pendingChanges.isEmpty)
+        print("PASS: a replacement during readback cannot inherit a pending override")
 
         c = fresh()
         IconTestState.delay = true

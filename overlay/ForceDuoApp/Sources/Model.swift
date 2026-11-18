@@ -345,6 +345,7 @@ final class AppCatalog {
                 continue
             }
             let forcedVersion = appliedTargets[id] ?? .target
+            let wasForced = forced.contains(id)
             let replaced = originalContainers[id].map { $0 != app.container } ?? false
             if replaced {
                 clearTracking(for: id)
@@ -357,8 +358,8 @@ final class AppCatalog {
                 forced.insert(id)
                 appliedTargets[id] = attempted
                 if !compatibilityProtected.contains(id) { selection.insert(id) }
-            } else if (forced.contains(id) || attempted != nil),
-                      app.sdk != forcedVersion, app.sdk != originals[id] {
+            } else if (wasForced || attempted != nil), app.sdk != originals[id],
+                      !wasForced || app.sdk != forcedVersion {
                 // The cache now contains an SDK that this installation did not write.
                 // Discard the old restore point rather than replacing the current SDK.
                 clearTracking(for: id)
@@ -444,7 +445,7 @@ final class AppCatalog {
                     clearTracking(for: id)
                 }
             }
-            persist()
+            reconcile()
             if failed.isEmpty {
                 resultMessage = summary + "\n" + String(localized: "Restart the iPhone Duo so apps reload the new interface.")
             } else {
